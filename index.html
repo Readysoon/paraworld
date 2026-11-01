@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ParaWorld</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Ein einziger Look: Architekturmodell auf dem Planungstisch, Bedienung in dunkler Tinte. */
+:root {
+  --ink: #1b1f24;
+  --ink-2: #262b32;
+  --paper: #f1eee7;
+  --muted: #a7adb5;
+  --line: rgba(255,255,255,0.10);
+  --zone-r: #5fb34e;   /* Wohnen */
+  --zone-c: #4b7fd8;   /* Gewerbe */
+  --zone-o: #22b2c2;   /* IT */
+  --zone-i: #e09b2d;   /* Industrie */
+  --good: #6fcf7a;
+  --warn: #f0b443;
+  --bad: #ef6a5b;
+  --font-display: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: #dcd8cf; color: var(--paper); font-family: var(--font-body); font-size: 14px; overflow: hidden; }
+#view { position: fixed; inset: 0; }
+#view canvas { display: block; touch-action: none; }
+
+.panel { background: color-mix(in srgb, var(--ink) 92%, transparent); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(6px); box-shadow: 0 8px 24px rgba(20,24,30,0.25); }
+
+/* oben links: Stadt-Zahlen */
+#stats { position: fixed; top: 12px; left: 12px; width: 280px; padding: 12px 14px; display: grid; gap: 10px; max-height: calc(100% - 120px); overflow-y: auto; overflow-x: hidden; }
+#stats > *, .stats-body > * { min-width: 0; }
+#stats h1 { gap: 6px; font-family: var(--font-display); font-weight: 700; font-size: 26px; letter-spacing: 0.02em; margin: 0; line-height: 1; text-transform: uppercase; display: flex; justify-content: space-between; align-items: baseline; }
+.stats-body { display: grid; gap: 10px; }
+#stats.collapsed { width: auto; min-width: 200px; }
+#stats.collapsed .stats-body { display: none; }
+.mini { display: none; font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+#stats.collapsed .mini { display: block; }
+.collapse { flex-shrink: 0; appearance: none; border: 1px solid var(--line); background: var(--ink-2); color: var(--paper); border-radius: 6px; width: 28px; height: 26px; cursor: pointer; font: 600 16px var(--font-body); line-height: 1; margin-left: 10px; }
+.collapse:hover { border-color: rgba(255,255,255,0.3); }
+#stats h1 small { font-family: var(--font-mono); font-size: 12px; font-weight: 400; color: var(--muted); letter-spacing: 0; text-transform: none; }
+.money { white-space: nowrap; font-family: var(--font-display); font-size: 30px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.money .delta { font-family: var(--font-mono); font-size: 12px; margin-left: 6px; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; font-size: 13px; }
+.kv span:nth-child(even) { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.kv .label { color: var(--muted); }
+.sect { border-top: 1px solid var(--line); padding-top: 8px; }
+.sect h2 { font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.meter { height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+.meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--bad), var(--warn) 45%, var(--good)); border-radius: 3px; transition: width .4s; }
+#advice { font-size: 13px; line-height: 1.4; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.05); border-left: 3px solid var(--warn); }
+#advice.ok { border-left-color: var(--good); }
+#advice.bad { border-left-color: var(--bad); }
+
+/* oben rechts: Bedarf wie in Cities: Skylines */
+#demand { position: fixed; top: 12px; right: 12px; padding: 10px 12px 8px; display: grid; gap: 6px; }
+#demand h2 { font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0; text-align: center; }
+.bars { display: flex; gap: 10px; align-items: stretch; height: 92px; }
+.bar { width: 22px; position: relative; background: rgba(255,255,255,0.06); border-radius: 4px; }
+.bar::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px dashed rgba(255,255,255,0.25); }
+.bar i { position: absolute; left: 0; right: 0; border-radius: 3px; transition: all .4s; }
+.bar-labels { display: flex; gap: 10px; }
+.bar-labels b { width: 22px; text-align: center; font-family: var(--font-display); font-size: 15px; }
+
+/* unten: Werkzeuge */
+#toolbar { position: fixed; left: 0; right: 0; bottom: 12px; margin: 0 auto; width: fit-content; max-width: calc(100% - 24px); padding: 8px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.tool { appearance: none; border: 1px solid transparent; background: var(--ink-2); color: var(--paper); border-radius: 8px; padding: 6px 8px 5px; min-width: 58px; display: grid; justify-items: center; gap: 2px; cursor: pointer; font: 500 13px var(--font-body); }
+.tool:hover { border-color: rgba(255,255,255,0.25); }
+.tool:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--zone-o); outline-offset: 2px; }
+.tool[aria-pressed="true"] { border-color: var(--paper); background: #39404a; }
+.tool .sw { width: 22px; height: 6px; border-radius: 3px; }
+.tool kbd { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.sep { width: 1px; background: var(--line); margin: 2px 2px; }
+.speed { display: flex; gap: 4px; align-items: center; }
+.speed button { appearance: none; border: 1px solid transparent; background: var(--ink-2); color: var(--paper); border-radius: 6px; padding: 6px 9px; cursor: pointer; font: 500 13px var(--font-mono); }
+.speed button[aria-pressed="true"] { border-color: var(--paper); background: #39404a; }
+
+/* unten links: Info zur Zelle */
+#detail { position: fixed; top: 190px; right: 12px; width: 300px; padding: 12px 14px; display: grid; gap: 8px; max-height: calc(100% - 300px); overflow-y: auto; }
+#detail[hidden] { display: none; }
+#detail .t { font-family: var(--font-display); font-size: 20px; font-weight: 600; line-height: 1.1; flex: 1; min-width: 0; }
+#detail > .row:first-child { flex-wrap: nowrap; align-items: flex-start; }
+.mixbar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; }
+.mixbar i { display: block; height: 100%; }
+.mixlegend { display: flex; gap: 10px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.mixlegend b { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+#info { position: fixed; left: 12px; bottom: 12px; width: 268px; padding: 10px 12px; font-size: 13px; display: grid; gap: 4px; }
+#info .t { font-family: var(--font-display); font-size: 18px; font-weight: 600; }
+#help { position: fixed; right: 12px; bottom: 12px; padding: 8px 12px; font-size: 12px; color: var(--muted); line-height: 1.5; max-width: 250px; }
+#help b { color: var(--paper); font-weight: 500; }
+.row { display: flex; gap: 6px 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.row > label { white-space: nowrap; }
+input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: auto; accent-color: var(--zone-o); }
+.kv span { overflow-wrap: anywhere; }
+.kv span.label { overflow-wrap: normal; white-space: nowrap; }
+.btn { appearance: none; border: 1px solid var(--line); background: var(--ink-2); color: var(--paper); border-radius: 6px; padding: 5px 9px; cursor: pointer; font: 500 12px var(--font-body); }
+.btn[aria-pressed="true"] { border-color: var(--paper); }
+
+#dialog { position: fixed; inset: 0; display: none; place-items: center; background: rgba(20,24,30,0.35); }
+#dialog.show { display: grid; }
+#dialog .panel { padding: 18px; width: min(340px, calc(100% - 32px)); display: grid; gap: 12px; }
+#dialog h3 { margin: 0; font-family: var(--font-display); font-size: 22px; }
+
+@media (max-width: 1600px) { #help { display: none; } }
+@media (max-width: 1500px) { #info { display: none; } }
+@media (max-width: 760px) {
+  #detail { top: auto; bottom: 150px; right: 12px; left: 12px; width: auto; max-height: 40%; }
+  #stats { width: 220px; padding: 10px; font-size: 12px; }
+  #stats h1 { font-size: 21px; }
+  #info, #help { display: none; }
+  .money { font-size: 26px; }
+  .tool { min-width: 52px; padding: 5px 6px; font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { .meter i, .bar i { transition: none; } }
+</style>
+</head>
+<body>
+<div id="view"></div>
+
+<section id="stats" class="panel" aria-label="Stadt">
+  <h1><span>ParaWorld <small id="date">Jan 1</small></span>
+    <button id="collapse" class="collapse" aria-expanded="true" aria-controls="statsBody" title="Menü einklappen (M)">‹</button></h1>
+  <div class="money" id="money">₡ 0<span class="delta" id="mdelta"></span></div>
+  <div class="mini" id="mini"></div>
+  <div id="statsBody" class="stats-body">
+  <div class="kv">
+    <span class="label">Einwohner</span><span id="pop">0</span>
+    <span class="label">Arbeitsplätze</span><span id="jobs">0</span>
+    <span class="label">Arbeitslos</span><span id="unemp">0 %</span>
+    <span class="label">Max. Höhe</span><span id="hmax">3 Stockwerke</span>
+    <span class="label">Verkehr</span><span id="traffic">flüssig</span>
+  </div>
+  <div>
+    <div class="row"><span class="label" style="color:var(--muted)">Höhenprofil</span><span id="lam" style="font-family:var(--font-mono);color:var(--muted)"></span></div>
+    <div class="row" style="margin-top:4px"><label for="steep" style="color:var(--muted)">Steilheit <b id="steepV" style="color:var(--paper);font-family:var(--font-mono)">2,5</b></label>
+    <input id="steep" type="range" min="0.5" max="5" step="0.1" value="2.5" aria-label="Steilheit der Höhenkurve"></div>
+    <canvas id="profile" width="480" height="120" style="width:100%;height:60px;display:block;margin-top:4px" aria-label="Erlaubte Höhe nach Abstand zum Zentrum"></canvas>
+  </div>
+  <div>
+    <div class="row"><span class="label" style="color:var(--muted)">Wirtschaftskraft</span><span id="econv" style="font-family:var(--font-mono)">0 %</span></div>
+    <div class="meter"><i id="econ" style="width:0%"></i></div>
+  </div>
+  <div id="advice">…</div>
+  <div class="sect">
+    <h2>Haushalt pro Monat</h2>
+    <div class="kv" id="budget"></div>
+  </div>
+  <div class="sect">
+    <h2>Waren</h2>
+    <div class="kv">
+      <span class="label">Produziert</span><span id="gprod">0</span>
+      <span class="label">Verkauft</span><span id="gsold">0</span>
+      <span class="label">Importiert</span><span id="gimp">0</span>
+    </div>
+  </div>
+  <div class="sect row">
+    <label for="tax" class="label" style="color:var(--muted)">Steuer <b id="taxv" style="color:var(--paper);font-family:var(--font-mono)">10 %</b></label>
+    <input id="tax" type="range" min="0" max="25" step="1" value="10">
+  </div>
+  <div class="sect">
+    <h2>Parks</h2>
+    <div class="row"><label for="pWater" style="color:var(--muted)">Wasser</label><input id="pWater" type="range" min="0" max="0.8" step="0.05" value="0.35"></div>
+    <div class="row"><label for="pPaths" style="color:var(--muted)">Wege</label><input id="pPaths" type="range" min="0" max="1" step="0.05" value="0.55"></div>
+    <div class="row"><label for="pTrees" style="color:var(--muted)">Bäume</label><input id="pTrees" type="range" min="0" max="1.6" step="0.05" value="0.6"></div>
+  </div>
+  <div class="sect">
+    <h2>Hochhäuser</h2>
+    <div class="row"><label for="mixAt" style="color:var(--muted)">Mischnutzung ab <b id="mixAtV" style="color:var(--paper);font-family:var(--font-mono)">15</b> St.</label>
+    <input id="mixAt" type="range" min="4" max="60" step="1" value="15" aria-label="Mischnutzung ab Stockwerken"></div>
+    <div class="row" style="margin-top:6px"><label for="mergeOn" style="color:var(--muted)"><input type="checkbox" id="mergeOn" checked> aktiv, ab <b id="mergeAtV" style="color:var(--paper);font-family:var(--font-mono)">12</b> Stockw.</label>
+    <input id="mergeAt" type="range" min="4" max="40" step="1" value="12" aria-label="Zusammenlegen ab Stockwerken"></div>
+  </div>
+  <div class="row">
+    <button class="btn" id="lvbtn" aria-pressed="false">Bodenwert</button>
+    <button class="btn" id="trbtn" aria-pressed="false">Verkehr</button>
+    <button class="btn" id="newbtn">Neue Stadt</button>
+  </div>
+  </div>
+</section>
+
+<section id="demand" class="panel" aria-label="Bedarf">
+  <h2>Bedarf</h2>
+  <div class="bars">
+    <div class="bar"><i id="dR"></i></div>
+    <div class="bar"><i id="dC"></i></div>
+    <div class="bar"><i id="dO"></i></div>
+    <div class="bar"><i id="dI"></i></div>
+  </div>
+  <div class="bar-labels"><b style="color:var(--zone-r)">W</b><b style="color:var(--zone-c)">G</b><b style="color:var(--zone-o)">IT</b><b style="color:var(--zone-i)">I</b></div>
+</section>
+
+<nav id="toolbar" class="panel" aria-label="Werkzeuge">
+  <button class="tool" data-tool="road"><span class="sw" style="background:#3a3e44;border:1px solid #777"></span>Straße<kbd>1</kbd></button>
+  <button class="tool" data-tool="ave"><span class="sw" style="background:#2c3035;border:1px solid #ddd"></span>Allee<kbd>2</kbd></button>
+  <button class="tool" data-tool="R"><span class="sw" style="background:var(--zone-r)"></span>Wohnen<kbd>3</kbd></button>
+  <button class="tool" data-tool="C"><span class="sw" style="background:var(--zone-c)"></span>Gewerbe<kbd>4</kbd></button>
+  <button class="tool" data-tool="O"><span class="sw" style="background:var(--zone-o)"></span>IT<kbd>5</kbd></button>
+  <button class="tool" data-tool="I"><span class="sw" style="background:var(--zone-i)"></span>Industrie<kbd>6</kbd></button>
+  <button class="tool" data-tool="metro"><span class="sw" style="background:#2f62c9"></span>U-Bahn<kbd>7</kbd></button>
+  <button class="tool" data-tool="park"><span class="sw" style="background:#8fbf6f"></span>Park<kbd>9</kbd></button>
+  <button class="tool" data-tool="bull"><span class="sw" style="background:var(--bad)"></span>Abreißen<kbd>8</kbd></button>
+  <button class="tool" data-tool="cam"><span class="sw" style="background:#888"></span>Ansehen<kbd>Esc</kbd></button>
+  <span class="sep"></span>
+  <div class="speed" role="group" aria-label="Tempo">
+    <button data-speed="0" title="Pause (Leertaste)">❚❚</button>
+    <button data-speed="1">1×</button>
+    <button data-speed="2">2×</button>
+    <button data-speed="4">4×</button>
+  </div>
+</nav>
+
+<section id="detail" class="panel" aria-live="polite" hidden>
+  <div class="row"><div class="t" id="dtitle">Gebäude</div><button class="collapse" id="dclose" title="Schließen" aria-label="Steckbrief schließen">×</button></div>
+  <div class="mixbar" id="dmix" hidden></div>
+  <div class="kv" id="dkv"></div>
+</section>
+
+<section id="info" class="panel" aria-live="polite">
+  <div class="t" id="itype">Zeig auf ein Feld</div>
+  <div class="kv" id="ikv"></div>
+</section>
+
+<section id="help" class="panel">
+  <b>Straße:</b> Linie ziehen · <b>Zonen:</b> Rechteck ziehen<br>
+  <b>Allee:</b> über eine Straße ziehen (mehr Kapazität)<br>
+  <b>Ansehen (Esc):</b> Gebäude anklicken für Details<br>
+  <b>Drehen:</b> rechte Maustaste, Q/E oder 2 Finger links/rechts<br>
+  <b>Schieben:</b> Shift + rechts oder WASD<br>
+  <b>Zoomen:</b> Mausrad, + / − oder R / F<br>
+  Große Zonen bekommen automatisch Straßen.<br>
+  <b>Park:</b> Rechteck ziehen (Taste 9)
+</section>
+
+<div id="dialog" role="dialog" aria-modal="true" aria-labelledby="dlgt">
+  <div class="panel">
+    <h3 id="dlgt">Neue Stadt anfangen?</h3>
+    <div>Die jetzige Stadt wird gelöscht.</div>
+    <div class="row"><button class="btn" id="dlgno">Abbrechen</button><button class="btn" id="dlgyes" style="border-color:var(--bad)">Ja, neu anfangen</button></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+"use strict";
+// =====================================================================
+//  SIMULATION  (ohne Grafik)
+// =====================================================================
+const N = 80;                 // Felder pro Seite, 1 Feld = 16 m (Karte 1,28 km)
+const OFF = N / 2 - 28;       // Startstadt in die Mitte
+const GRID_PHASE = (16 + OFF) % 5;   // Strassenraster alle 5 Felder (Bloecke 4 Felder tief)
+const T = { EMPTY: 0, ROAD: 1, R: 2, C: 3, O: 4, I: 5, HALL: 6, METRO: 7, PARK: 8 };
+const ZONES = [T.R, T.C, T.O, T.I];
+const ZONE_KEY = { R: T.R, C: T.C, O: T.O, I: T.I };
+const ZONE_NAME = { 2: "Wohnen", 3: "Gewerbe", 4: "IT", 5: "Industrie" };
+const ZONE_DEPTH = 2;         // wie Cities: Skylines: 32 m tief
+const COST = { road: 15, ave: 40, bull: 5, metro: 3000, park: 30 };
+const TICKS_PER_MONTH = 8;
+const MONTHS = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
+
+// Realistische Werte pro Stockwerk (Turm-Etage ca. 75 m2 Nutzflaeche)
+const PER_FLOOR = { res: 2, jobsC: 2, shopC: 12, jobsO: 6, jobsI: 3, goodsI: 25 };
+// Zusammengelegte Grundstuecke: 2 x 2 Felder, Grundriss ca. 4,6 x so gross
+// Gebaeude-Grundriss: Halbbreite = Felder/2 - 0,1 (einzeln: 0,42)
+const R1 = 0.42, MAX_MERGE = 6;
+const halfExt = n => n * 0.5 - 0.1;
+const AFwh = (w, h) => (w === 1 && h === 1) ? 1 : (halfExt(w) * halfExt(h)) / (R1 * R1);
+// Verkehr: Fahrten pro Person/Job, Kapazitaet pro Strassenfeld
+const ROAD_CAP = { 1: 60, 2: 140 };
+const TRAFFIC_R = 4, METRO_R = 6, METRO_CUT = 0.45;
+
+function hash(i, k) {
+  let x = (Math.imul(i + 1, 374761393) + Math.imul(k + 7, 668265263)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177);
+  x ^= x >>> 16;
+  return (x >>> 0) / 4294967296;
+}
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+const S = {
+  type: new Uint8Array(N * N),
+  lvl: new Uint8Array(N * N),        // Stockwerke; bei Strassen: 1 = normal, 2 = Allee
+  merge: new Int32Array(N * N).fill(-1),   // Feld gehoert zu Gebaeude mit dieser Ecke (links oben)
+  mw: new Uint8Array(N * N).fill(1), mh: new Uint8Array(N * N).fill(1),   // Groesse in Feldern
+  roadDist: new Int16Array(N * N),
+  poll: new Float32Array(N * N),
+  trips: new Float32Array(N * N),
+  cong: new Float32Array(N * N),     // Auslastung der Strassen im Umkreis (1 = voll)
+  cx: N / 2, cz: N / 2,                    // Zentrum (automatisch: Schwerpunkt der Stadt)
+  money: 30000, month: 0, tax: 0.10,
+  mergeOn: true, mergeAt: 12, steep: 2.5, seed: 1, mixAt: 15,
+  parkWater: 0.35, parkPaths: 0.55, parkTrees: 0.6,     // Park-Parameter (fuer alle Parks)
+  parkBoost: new Float32Array(N * N),
+  dem: { 2: 0.4, 3: 0, 4: 0, 5: 0.1 },
+  st: {}, budget: {}, lastDelta: 0,
+};
+
+const idx = (x, z) => z * N + x;
+const inside = (x, z) => x >= 0 && z >= 0 && x < N && z < N;
+const isZone = t => t >= T.R && t <= T.I;
+const isAnchor = i => S.merge[i] === i;
+const isPart = i => S.merge[i] >= 0 && S.merge[i] !== i;
+const cellsOf = a => { const x = a % N, z = (a / N) | 0, out = [];
+  for (let dz = 0; dz < S.mh[a]; dz++) for (let dx = 0; dx < S.mw[a]; dx++) out.push(idx(x + dx, z + dz)); return out; };
+
+function computeRoadDist() {
+  const d = S.roadDist; d.fill(999);
+  const q = [];
+  for (let i = 0; i < N * N; i++) if (S.type[i] === T.ROAD) { d[i] = 0; q.push(i); }
+  for (let h = 0; h < q.length; h++) {
+    const i = q[h], x = i % N, z = (i / N) | 0;
+    if (d[i] >= ZONE_DEPTH) continue;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, nz = z + dz;
+      if (!inside(nx, nz)) continue;
+      const j = idx(nx, nz);
+      if (d[j] > d[i] + 1 && S.type[j] !== T.ROAD) { d[j] = d[i] + 1; q.push(j); }
+    }
+  }
+}
+
+function computePollution() {
+  const p = S.poll; p.fill(0);
+  for (let i = 0; i < N * N; i++) {
+    if (S.type[i] !== T.I || S.lvl[i] === 0 || isPart(i)) continue;
+    const x = i % N, z = (i / N) | 0, r = 3 + Math.floor(Math.max(S.mw[i], S.mh[i]) / 2);
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      const nx = x + dx, nz = z + dz;
+      if (!inside(nx, nz)) continue;
+      const j = idx(nx, nz);
+      p[j] = Math.min(1, p[j] + 0.35 / (1 + Math.max(Math.abs(dx), Math.abs(dz))));
+    }
+  }
+}
+
+// Mittelpunkt eines Gebaeudes (zusammengelegt = Mitte des 2x2-Blocks)
+function centerOf(i) {
+  const x = i % N, z = (i / N) | 0;
+  return isAnchor(i) ? [x + S.mw[i] / 2, z + S.mh[i] / 2] : [x + 0.5, z + 0.5];
+}
+// Bodenwert als e-Kurve: exp(-Abstand / Lambda).
+// Lambda waechst mit der Stadt, aber nur bis 11 Felder (176 m).
+// Dadurch bleibt aussen immer ein Ring aus Einfamilienhaeusern.
+const LAMBDA_MIN = 5.5, LAMBDA_MAX = 11, HOUSE_LV = 0.35;
+const lambda = () => LAMBDA_MIN + Math.min(LAMBDA_MAX - LAMBDA_MIN, Math.sqrt(S.st.pop || 0) / 12);
+const lvAt = d => Math.exp(-d / lambda());
+// Unregelmaessige Form: Auslaeufer je nach Richtung + weiches Rauschen
+function vnoise(x, z) {
+  const g = 6, fx = x / g, fz = z / g, ix = Math.floor(fx), iz = Math.floor(fz);
+  const sx = fx - ix, sz = fz - iz, u = sx * sx * (3 - 2 * sx), v = sz * sz * (3 - 2 * sz);
+  const c = (a, b) => hash(((a + 50) * 131 + (b + 50)) | 0, 11 + S.seed) * 2 - 1;
+  return (c(ix, iz) * (1 - u) + c(ix + 1, iz) * u) * (1 - v) + (c(ix, iz + 1) * (1 - u) + c(ix + 1, iz + 1) * u) * v;
+}
+function shapeFactor(x, z) {
+  const a = Math.atan2(z - S.cz, x - S.cx), ph = k => hash(S.seed, 20 + k) * 6.283;
+  const lobes = 0.22 * Math.sin(2 * a + ph(1)) + 0.14 * Math.sin(3 * a + ph(2)) + 0.08 * Math.sin(5 * a + ph(3));
+  return Math.max(0.45, 1 + lobes + 0.18 * vnoise(x, z));
+}
+function landValue(i) {
+  const [cx, cz] = centerOf(i);
+  const lv = lvAt(Math.hypot(cx - S.cx, cz - S.cz) * shapeFactor(cx, cz));
+  return Math.min(1, lv * (1 + S.parkBoost[i]));     // Parks in der Naehe heben den Bodenwert
+}
+// Teiche: weiches Rauschen, nur wo alle Nachbarn auch Park sind (nie am Rand)
+function isParkWater(x, z) {
+  if (S.parkWater <= 0) return false;
+  for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+    if (!inside(x + dx, z + dz) || S.type[idx(x + dx, z + dz)] !== T.PARK) return false;
+  }
+  const g = 3.5, fx = x / g + 7.3, fz = z / g + 3.1, ix = Math.floor(fx), iz = Math.floor(fz);
+  const sx = fx - ix, sz = fz - iz, u = sx * sx * (3 - 2 * sx), v = sz * sz * (3 - 2 * sz);
+  const c = (a, b) => hash(((a + 50) * 173 + (b + 50)) | 0, 97 + S.seed);
+  const n = (c(ix, iz) * (1 - u) + c(ix + 1, iz) * u) * (1 - v) + (c(ix, iz + 1) * (1 - u) + c(ix + 1, iz + 1) * u) * v;
+  return n > 1 - S.parkWater;
+}
+// Wegknoten pro Park-Feld: Mitte leicht verschoben
+const parkNode = (x, z) => [x + 0.5 + (hash(idx(x, z), 33) - 0.5) * 0.5, z + 0.5 + (hash(idx(x, z), 34) - 0.5) * 0.5];
+// Parks: bis 4 Felder Umkreis +5 % ... +30 % Bodenwert
+function computeParkBoost() {
+  const b = S.parkBoost; b.fill(0);
+  for (let i = 0; i < N * N; i++) {
+    if (S.type[i] !== T.PARK) continue;
+    const x = i % N, z = (i / N) | 0;
+    for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
+      if (!inside(x + dx, z + dz)) continue;
+      const j = idx(x + dx, z + dz);
+      b[j] = Math.min(0.3, b[j] + 0.04 / (1 + Math.max(Math.abs(dx), Math.abs(dz))));
+    }
+  }
+}
+function heightLimit() {
+  const p = clamp((S.st.pop || 0) / 3500, 0, 1);
+  return Math.round(3 + 67 * Math.pow(p, 0.6) * clamp(S.st.econ || 0, 0, 1));
+}
+// Ziel-Hoehe fuer ein einzelnes Grundstueck
+function capSingle(i, t) {
+  const lv = landValue(i), H = S.st.hmax || 3;
+  // Steilheit k: Hoehe = H * e^(-k * d / Lambda). Im Turm-Bereich mindestens 4 Stockwerke.
+  const k = S.steep, base = Math.min(4, H);
+  // Jedes Grundstueck hat eigene Ambitionen: etwa jedes sechste wird eine Spitze
+  const hv = hash(i, 7), spire = hv < 0.17 ? 1 : 0.35 + 0.35 * hv;
+  const Hs = H * spire;
+  if (t === T.R) { const c = Math.round(H * Math.pow(lv, k)); return lv < HOUSE_LV ? clamp(c, 1, 3) : Math.max(base, Math.round(Hs * Math.pow(lv, k))); }
+  if (t === T.C) return Math.max(Math.min(3, H), Math.round(Hs * 0.6 * Math.pow(lv, k)));
+  if (t === T.O) return Math.max(base, Math.round(Hs * Math.pow(lv, k)));
+  if (t === T.I) return Math.max(1, Math.round(Math.max(2 + 2 * clamp(S.st.econ || 0, 0, 1), H * 0.45 * Math.pow(lv, k))));
+  return 0;
+}
+// Zusammengelegt: gleiche Gesamtflaeche wie 4 Einzeltuerme -> breiter und niedriger
+function capFor(i) {
+  const t = S.type[i];
+  if (isAnchor(i)) return Math.max(1, Math.round(S.mw[i] * S.mh[i] * capSingle(i, t) / AFwh(S.mw[i], S.mh[i])));
+  return capSingle(i, t);
+}
+const isSmallHouse = i => S.type[i] === T.R && !isAnchor(i) && capFor(i) <= 3 && S.lvl[i] <= 3;
+const areaOf = i => isAnchor(i) ? AFwh(S.mw[i], S.mh[i]) : 1;
+
+// Was ein Gebaeude beherbergt
+// Mischnutzung: ab einer gewissen Hoehe verschwimmen Wohnen, Gewerbe und IT.
+// Unten Laeden, in der Mitte Bueros, oben Wohnungen. Die Zone bestimmt, was ueberwiegt;
+// die Aufteilung folgt zusaetzlich dem Bedarf der Stadt.
+const MIX_BASE = { 2: { c: 0.1, o: 0.2, r: 0.7 }, 3: { c: 0.4, o: 0.35, r: 0.25 }, 4: { c: 0.1, o: 0.65, r: 0.25 } };
+function mixOf(i) {
+  const t = S.type[i], L = S.lvl[i];
+  if (t === T.I || t < T.R || t > T.O || L < S.mixAt || isSmallHouse(i)) return null;
+  const b = MIX_BASE[t], d = k => 1 + 0.8 * clamp(S.dem[k] || 0, -0.8, 1);
+  let wc = b.c * d(T.C), wo = b.o * d(T.O), wr = b.r * d(T.R);
+  const sum = wc + wo + wr; wc /= sum; wo /= sum;
+  const nC = Math.max(1, Math.round(L * wc)), nO = Math.max(1, Math.round(L * wo));
+  return { c: nC, o: nO, r: Math.max(1, L - nC - nO) };
+}
+function useOf(i) {
+  const t = S.type[i], L = S.lvl[i], a = areaOf(i);
+  const u = { res: 0, jobs: 0, jobsC: 0, jobsO: 0, jobsI: 0, shop: 0, goods: 0, mix: null };
+  if (L === 0 || isPart(i)) return u;
+  const m = mixOf(i);
+  let fC = 0, fO = 0, fR = 0;
+  if (m) { fC = m.c; fO = m.o; fR = m.r; u.mix = m; }
+  else if (t === T.R) { if (isSmallHouse(i)) { u.res = L + 1; return u; } fR = L; }
+  else if (t === T.C) fC = L;
+  else if (t === T.O) fO = L;
+  else if (t === T.I) { u.jobsI = Math.round(L * PER_FLOOR.jobsI * a); u.goods = Math.round(L * PER_FLOOR.goodsI * a); }
+  u.res = Math.round(fR * PER_FLOOR.res * a);
+  u.jobsC = Math.round(fC * PER_FLOOR.jobsC * a); u.shop = Math.round(fC * PER_FLOOR.shopC * a);
+  u.jobsO = Math.round(fO * PER_FLOOR.jobsO * a);
+  u.jobs = u.jobsC + u.jobsO + u.jobsI;
+  return u;
+}
+
+// ---------- Verkehr ----------
+// Jedes Gebaeude erzeugt Fahrten. Im Umkreis von 4 Feldern wird verglichen:
+// Fahrten / Kapazitaet aller Strassen. U-Bahn spart 45 % der Autofahrten.
+const pre = new Float64Array((N + 1) * (N + 1));
+function windowSums(src, out) {
+  pre.fill(0);
+  for (let z = 0; z < N; z++) {
+    let row = 0;
+    for (let x = 0; x < N; x++) { row += src[idx(x, z)]; pre[(z + 1) * (N + 1) + x + 1] = pre[z * (N + 1) + x + 1] + row; }
+  }
+  for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+    const x0 = Math.max(0, x - TRAFFIC_R), z0 = Math.max(0, z - TRAFFIC_R);
+    const x1 = Math.min(N, x + TRAFFIC_R + 1), z1 = Math.min(N, z + TRAFFIC_R + 1);
+    out[idx(x, z)] = pre[z1 * (N + 1) + x1] - pre[z0 * (N + 1) + x1] - pre[z1 * (N + 1) + x0] + pre[z0 * (N + 1) + x0];
+  }
+}
+const capArr = new Float32Array(N * N), tripW = new Float32Array(N * N), capW = new Float32Array(N * N);
+const metroF = new Float32Array(N * N);
+function computeTraffic() {
+  metroF.fill(1);
+  for (let m = 0; m < N * N; m++) {
+    if (S.type[m] !== T.METRO) continue;
+    const mx = m % N, mz = (m / N) | 0;
+    for (let dz = -METRO_R; dz <= METRO_R; dz++) for (let dx = -METRO_R; dx <= METRO_R; dx++)
+      if (inside(mx + dx, mz + dz)) metroF[idx(mx + dx, mz + dz)] = 1 - METRO_CUT;
+  }
+  let total = 0, weighted = 0;
+  for (let i = 0; i < N * N; i++) {
+    const t = S.type[i];
+    capArr[i] = t === T.ROAD ? ROAD_CAP[S.lvl[i] === 2 ? 2 : 1] : 0;
+    let tr = 0;
+    if (isZone(t) && S.lvl[i] > 0 && !isPart(i)) {
+      const u = useOf(i);
+      tr = (u.res * 0.4 + u.jobs * 0.4 + u.shop * 0.1 + u.goods * 0.05) * metroF[i];
+    }
+    S.trips[i] = tr;
+  }
+  windowSums(S.trips, tripW);
+  windowSums(capArr, capW);
+  for (let i = 0; i < N * N; i++) {
+    S.cong[i] = capW[i] > 0 ? tripW[i] / capW[i] : (tripW[i] > 0 ? 3 : 0);
+    if (S.trips[i] > 0) { total += S.trips[i]; weighted += S.trips[i] * Math.min(S.cong[i], 2); }
+  }
+  S.st.avgCong = total > 0 ? weighted / total : 0;
+}
+// Wie stark der Verkehr das Wachstum bremst (1 = gar nicht, 0 = Stillstand)
+const trafficFactor = c => clamp((1.5 - c) / 0.7, 0, 1);
+
+function computeStats() {
+  let pop = 0, jobsC = 0, jobsO = 0, jobsI = 0, shopCap = 0, goodsCap = 0, roads = 0, aves = 0, metros = 0, parks = 0;
+  const empty = { 2: 0, 3: 0, 4: 0, 5: 0 };
+  for (let i = 0; i < N * N; i++) {
+    const t = S.type[i];
+    if (t === T.ROAD) { if (S.lvl[i] === 2) aves++; else roads++; continue; }
+    if (t === T.METRO) { metros++; continue; }
+    if (t === T.PARK) { parks++; continue; }
+    if (!isZone(t) || isPart(i)) continue;
+    if (S.lvl[i] === 0) { if (S.roadDist[i] <= ZONE_DEPTH) empty[t]++; continue; }
+    const u = useOf(i);
+    pop += u.res; jobsC += u.jobsC; shopCap += u.shop; jobsO += u.jobsO; jobsI += u.jobsI; goodsCap += u.goods;
+  }
+  updateCenter();
+  const workers = Math.round(pop * 0.5);
+  const jobs = jobsC + jobsO + jobsI;
+  const employed = Math.min(workers, jobs);
+  const unemp = workers > 0 ? 1 - employed / workers : 0;
+  const fill = jobs > 0 ? employed / jobs : 0;
+  const goodsProd = Math.round(goodsCap * fill);
+  const want = pop;
+  const sales = Math.round(Math.min(want, shopCap * Math.max(fill, 0.3)));
+  const imported = Math.max(0, sales - goodsProd);
+  const exported = Math.max(0, goodsProd - sales);
+  const itOut = Math.round(jobsO * fill);
+  const avgCong = S.st.avgCong || 0;
+  const econ = clamp(0.25 + 0.55 * (1 - unemp) * (jobs > 0 ? Math.max(fill, 0.4) : 0.5)
+    + 0.15 * clamp(pop / 3000, 0, 1) + (S.money >= 0 ? 0.1 : -0.4)
+    - 0.25 * (sales > 0 ? imported / sales : 0)
+    - 0.3 * clamp(avgCong - 0.8, 0, 1), 0, 1.2);
+  S.st = { pop, workers, jobs, jobsC, jobsO, jobsI, shopCap, goodsProd, want, sales, imported, exported, itOut, unemp, fill, econ, roads, aves, metros, parks, empty, avgCong };
+  S.st.hmax = heightLimit();
+}
+
+// Zentrum = Schwerpunkt aus Arbeitsplaetzen und Einwohnern; wandert langsam mit
+function updateCenter() {
+  let sw = 0, sx = 0, sz = 0;
+  for (let i = 0; i < N * N; i++) {
+    if (!isZone(S.type[i]) || isPart(i) || S.lvl[i] === 0) continue;
+    const u = useOf(i), w = u.jobs + u.res * 0.5;
+    if (w <= 0) continue;
+    const [x, z] = centerOf(i);
+    sw += w; sx += x * w; sz += z * w;
+  }
+  let tx, tz;
+  if (sw > 0) { tx = sx / sw; tz = sz / sw; }
+  else {
+    let n = 0; tx = 0; tz = 0;
+    for (let i = 0; i < N * N; i++) if (S.type[i] === T.ROAD) { tx += (i % N) + 0.5; tz += ((i / N) | 0) + 0.5; n++; }
+    if (n) { tx /= n; tz /= n; } else { tx = tz = N / 2; }
+  }
+  S.cx += (tx - S.cx) * 0.01; S.cz += (tz - S.cz) * 0.01;
+}
+
+function updateDemand() {
+  const s = S.st, taxP = (S.tax - 0.09) * 4;
+  const jobGap = clamp((s.jobs - s.workers) / Math.max(s.workers, 30), -1, 1);
+  const unempP = s.unemp > 0.12 ? (s.unemp - 0.12) * 3 : 0;
+  const tR = 0.18 + jobGap * 0.8 - taxP - unempP * 1.5;
+  const tC = clamp((s.want - s.shopCap) / Math.max(s.shopCap, 30), -1, 1) * 0.8 + 0.05 - taxP
+    - 0.15 * (s.sales > 0 ? s.imported / s.sales : 0);
+  const tO = clamp(-jobGap, -1, 1) * 0.5 + 0.3 * clamp(s.pop / 1500, 0, 1) + 0.05 - taxP;
+  const tI = clamp(-jobGap, -1, 1) * 0.45 + clamp((s.sales - s.goodsProd) / Math.max(s.sales, 30), -1, 1) * 0.5 + 0.1 - taxP;
+  const k = 0.25;
+  for (const [t, v] of [[T.R, tR], [T.C, tC], [T.O, tO], [T.I, tI]]) S.dem[t] = clamp(S.dem[t] * (1 - k) + v * k, -1, 1);
+}
+
+// ---------- Zusammenlegen ----------
+function demolishMerged(a) {
+  for (const j of cellsOf(a)) { S.merge[j] = -1; S.lvl[j] = 0; S.mw[j] = 1; S.mh[j] = 1; }
+}
+// Im innersten Kern bleiben die Tuerme schlank (keine Verschmelzung)
+const CORE_LV = 0.72;
+// Hoehe, die ein Gebaeude als Einzelturm haette (fuer die Schwelle)
+const singleEq = i => S.lvl[i] * areaOf(i) / (S.mw[i] * S.mh[i]);
+function setBuilding(a, w, h, totalArea) {
+  for (let dz = 0; dz < h; dz++) for (let dx = 0; dx < w; dx++) {
+    const j = a + dz * N + dx; S.merge[j] = a; S.lvl[j] = 0; S.mw[j] = 1; S.mh[j] = 1;
+  }
+  S.mw[a] = w; S.mh[a] = h;
+  S.lvl[a] = Math.max(1, Math.round(totalArea / AFwh(w, h)));   // Flaeche bleibt gleich
+}
+function tryMerge(rnd) {
+  if (!S.mergeOn) return false;
+  let changed = false;
+  // 1) vier Einzeltuerme (2 x 2) -> ein Gebaeude
+  for (let z = 0; z < N - 1; z++) for (let x = 0; x < N - 1; x++) {
+    const a = idx(x, z), cells = [a, a + 1, a + N, a + N + 1], t = S.type[a];
+    if (!isZone(t)) continue;
+    let ok = true, sum = 0;
+    for (const j of cells) {
+      if (S.type[j] !== t || S.merge[j] >= 0 || S.lvl[j] < S.mergeAt || S.roadDist[j] > ZONE_DEPTH || isSmallHouse(j) || landValue(j) > CORE_LV) { ok = false; break; }
+      sum += S.lvl[j];
+    }
+    if (!ok || rnd() > 0.06) continue;
+    setBuilding(a, 2, 2, sum);
+    changed = true;
+  }
+  // 2) zwei zusammengelegte Gebaeude mit gleich langer gemeinsamer Kante -> eines
+  //    (nur direkt nebeneinander: dazwischen liegt keine Strasse)
+  for (let a = 0; a < N * N; a++) {
+    if (!isAnchor(a) || S.lvl[a] === 0) continue;
+    const t = S.type[a], x = a % N, z = (a / N) | 0, w = S.mw[a], h = S.mh[a];
+    if (singleEq(a) < S.mergeAt || landValue(a) > CORE_LV) continue;
+    for (const [nx, nz, horiz] of [[x + w, z, true], [x, z + h, false]]) {
+      if (!inside(nx, nz)) continue;
+      const b = S.merge[idx(nx, nz)];
+      if (b < 0 || b !== idx(nx, nz) || S.type[b] !== t || S.lvl[b] === 0 || singleEq(b) < S.mergeAt) continue;
+      const nw = horiz ? w + S.mw[b] : w, nh = horiz ? h : h + S.mh[b];
+      if (horiz ? S.mh[b] !== h : S.mw[b] !== w) continue;     // Kanten muessen gleich lang sein
+      if (nw > MAX_MERGE || nh > MAX_MERGE || Math.max(nw, nh) > 3 * Math.min(nw, nh)) continue;
+      if (rnd() > 0.04) continue;
+      const total = S.lvl[a] * areaOf(a) + S.lvl[b] * areaOf(b);
+      demolishMerged(b);
+      setBuilding(a, nw, nh, total);
+      changed = true;
+      break;
+    }
+  }
+  return changed;
+}
+
+// ---------- Wachstum ----------
+function growthTick(rnd = Math.random) {
+  computeStats();
+  updateDemand();
+  computePollution();
+  computeTraffic();
+  computeParkBoost();
+  const E = S.st.econ;
+  let changed = false;
+  for (let i = 0; i < N * N; i++) {
+    const t = S.type[i];
+    if (!isZone(t) || isPart(i)) continue;
+    const L = S.lvl[i];
+    if (S.roadDist[i] > ZONE_DEPTH) { if (L > 0 && rnd() < 0.05) { S.lvl[i]--; changed = true; } continue; }
+    const dem = S.dem[t], cap = capFor(i), lv = landValue(i), tf = trafficFactor(S.cong[i]);
+    if (L < cap && dem > 0 && S.money >= 0) {
+      let p = dem * (0.03 + 0.4 * lv) * (0.3 + E) * 1.3;
+      if (t !== T.R || !isSmallHouse(i)) p *= 0.7 + 0.6 * (capFor(i) - L) / Math.max(cap, 1);   // weit unter Ziel = schneller
+      if (t === T.I) p = dem * 0.06 * (0.3 + E);
+      if (t === T.R) p *= 1 - 0.7 * S.poll[i];
+      p *= tf;
+      if (rnd() < p) { S.lvl[i] = L + 1; changed = true; }
+    } else if (L > cap) {
+      if (rnd() < 0.04) { S.lvl[i] = L - 1; changed = true; }
+    } else if (L > 0 && (dem < -0.3 || S.cong[i] > 1.8)) {
+      const pd = Math.max((-dem - 0.3) * 0.05, (S.cong[i] - 1.8) * 0.03);
+      if (rnd() < pd) { S.lvl[i] = L - 1; changed = true; }
+    }
+    if (isAnchor(i) && S.lvl[i] === 0) { demolishMerged(i); changed = true; }
+  }
+  if (tryMerge(rnd)) changed = true;
+  return changed;
+}
+
+function taxOf(i) {
+  const u = useOf(i), s = S.st, t = S.tax;
+  const salesShare = s.shopCap > 0 ? u.shop / s.shopCap : 0;
+  const goodsShare = s.goodsProd > 0 && u.goods > 0 ? u.goods * (s.fill || 0) / s.goodsProd : 0;
+  return Math.round(u.res * 11 * t + salesShare * Math.max(0, s.sales * 5 - s.imported * 2.5) * t
+    + u.jobsO * (s.fill || 0) * 16 * t + goodsShare * (s.goodsProd * 1.6 + s.exported * 0.8) * t);
+}
+function monthTick() {
+  const s = S.st, t = S.tax;
+  const b = {
+    "Wohnen": s.pop * 11 * t,
+    "Gewerbe": Math.max(0, s.sales * 5 - s.imported * 2.5) * t,
+    "IT": s.itOut * 16 * t,
+    "Industrie": (s.goodsProd * 1.6 + s.exported * 0.8) * t,
+    "Straßen": -Math.round(s.roads * 1.5 + s.aves * 4),
+    "U-Bahn": -s.metros * 150,
+    "Parks": -s.parks,
+    "Dienste": -s.pop * 1.15,
+    "Verwaltung": -120,
+  };
+  if (!s.metros) delete b["U-Bahn"];
+  if (!s.parks) delete b["Parks"];
+  for (const k in b) b[k] = Math.round(b[k]);
+  const delta = Object.values(b).reduce((a, c) => a + c, 0);
+  S.money += delta; S.lastDelta = delta; S.budget = b; S.month++;
+}
+
+function worstJam() {
+  let best = -1, v = 0;
+  for (let i = 0; i < N * N; i++) if (S.trips[i] > 0 && S.cong[i] > v) { v = S.cong[i]; best = i; }
+  return [best, v];
+}
+function advice() {
+  const s = S.st;
+  if (S.money < 0) return ["bad", "Schulden: Die Stadt wächst nicht mehr. Steuern erhöhen oder weniger bauen."];
+  const [, jam] = worstJam();
+  if (jam > 1.15) return ["bad", "Stau! Wo die Straßen voll sind, wachsen keine Häuser mehr. Baue Straßen zur Allee aus (Taste 2) oder eine U-Bahn (Taste 7). „Verkehr zeigen“ zeigt die Engstellen."];
+  if (s.unemp > 0.15) return ["bad", "Viele Arbeitslose. Weise Gewerbe, IT oder Industrie aus."];
+  for (const t of ZONES) if (S.dem[t] > 0.45 && s.empty[t] < 4)
+    return ["warn", `Hoher Bedarf an ${ZONE_NAME[t]}, aber kaum freie Flächen. Weise mehr ${ZONE_NAME[t]} aus.`];
+  if (jam > 0.85) return ["warn", "Der Verkehr wird dichter. Bald bremst er das Wachstum."];
+  if (s.sales > 60 && s.imported > s.goodsProd * 0.6) return ["warn", "Die Läden müssen Waren importieren. Mehr Industrie bringt Geld in die Stadt."];
+  if (S.tax > 0.16) return ["warn", "Hohe Steuern bremsen das Wachstum."];
+  return ["ok", "Die Wirtschaft läuft. Je stärker sie ist, desto schneller und höher wachsen die Häuser nahe am Zentrum."];
+}
+
+// ---------- Startstadt ----------
+function road(x0, z0, x1, z1, lv = 1) {
+  for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++)
+    for (let z = Math.min(z0, z1); z <= Math.max(z0, z1); z++)
+      if (inside(x, z)) { S.type[idx(x, z)] = T.ROAD; S.lvl[idx(x, z)] = lv; }
+}
+function zoneRect(t, x0, z0, x1, z1) {
+  for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) {
+    const i = idx(x, z);
+    if (inside(x, z) && S.type[i] === T.EMPTY && S.roadDist[i] <= ZONE_DEPTH) S.type[i] = t;
+  }
+}
+function newCity() {
+  S.type.fill(0); S.lvl.fill(0); S.merge.fill(-1); S.mw.fill(1); S.mh.fill(1);
+  S.cx = N / 2; S.cz = N / 2; S.seed = 1 + Math.floor(Math.random() * 9999);
+  S.money = 30000; S.month = 0; S.tax = 0.10; S.st = {}; S.steep = S.steep || 2.5;
+  S.dem = { 2: 0.4, 3: 0, 4: 0, 5: 0.1 };
+  const o = OFF;
+  for (const v of [16, 21, 26, 31, 36, 41]) { road(v + o, 16 + o, v + o, 41 + o); road(16 + o, v + o, 41 + o, v + o); }
+  road(41 + o, 31 + o, 51 + o, 31 + o); road(41 + o, 36 + o, 51 + o, 36 + o); road(51 + o, 31 + o, 51 + o, 36 + o);
+  computeRoadDist();
+  zoneRect(T.C, 22 + o, 22 + o, 25 + o, 25 + o); zoneRect(T.C, 32 + o, 27 + o, 35 + o, 30 + o);
+  zoneRect(T.O, 27 + o, 22 + o, 30 + o, 25 + o); zoneRect(T.O, 22 + o, 32 + o, 25 + o, 35 + o);
+  for (let x = 37 + o; x <= 40 + o; x++) for (let z = 17 + o; z <= 20 + o; z++) S.type[idx(x, z)] = T.PARK;
+  zoneRect(T.R, 17 + o, 17 + o, 40 + o, 40 + o);
+  for (let x = 42 + o; x <= 50 + o; x++) for (let z = 32 + o; z <= 35 + o; z++) { const i = idx(x, z); if (S.type[i] === T.EMPTY) S.type[i] = T.I; }
+  let seed = 1;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let m = 0; m < 24; m++) { for (let k = 0; k < TICKS_PER_MONTH; k++) growthTick(rnd); monthTick(); }
+  S.money = Math.max(S.money, 22000);
+}
+
+// ---------- Speichern ----------
+function serialize() {
+  return { v: 4, type: Array.from(S.type), lvl: Array.from(S.lvl), merge: Array.from(S.merge), mw: Array.from(S.mw), mh: Array.from(S.mh), cx: S.cx, cz: S.cz,
+    money: S.money, month: S.month, tax: S.tax, dem: S.dem, mergeOn: S.mergeOn, mergeAt: S.mergeAt, steep: S.steep, seed: S.seed,
+    parkWater: S.parkWater, parkPaths: S.parkPaths, parkTrees: S.parkTrees, mixAt: S.mixAt };
+}
+function load(o) {
+  if (!o || o.v !== 4 || !o.type || o.type.length !== N * N) return false;
+  S.type.set(o.type); S.lvl.set(o.lvl); S.merge.set(o.merge); S.mw.set(o.mw); S.mh.set(o.mh); S.cx = o.cx; S.cz = o.cz;
+  S.money = o.money; S.month = o.month; S.tax = o.tax; S.dem = o.dem;
+  S.mergeOn = o.mergeOn !== false; S.mergeAt = o.mergeAt || 12; S.steep = o.steep || 2.5; S.seed = o.seed || 1;
+  S.mixAt = o.mixAt || 15;
+  if (o.parkWater != null) { S.parkWater = o.parkWater; S.parkPaths = o.parkPaths; S.parkTrees = o.parkTrees; }
+  computeRoadDist(); computeParkBoost(); computeStats(); computeTraffic();
+  return true;
+}
+function save() { try { localStorage.setItem("spiralstadt4", JSON.stringify(serialize())); } catch (e) {} }
+
+// =====================================================================
+//  GRAFIK
+// =====================================================================
+if (typeof THREE !== "undefined") {
+
+const FH = 0.2, SLAB = 0.035;              // Stockwerk 3,2 m (1 Einheit = 16 m)
+const view = document.getElementById("view");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputEncoding = THREE.sRGBEncoding;
+view.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdcd8cf);
+scene.fog = new THREE.Fog(0xdcd8cf, 90, 190);
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 500);
+camera.position.set(-22, 22, 28);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(2, 0, 2);
+controls.enableDamping = true;
+controls.maxPolarAngle = 1.38;
+controls.minDistance = 4; controls.maxDistance = 170;
+controls.screenSpacePanning = false;
+controls.update();
+
+scene.add(new THREE.HemisphereLight(0xeef3f8, 0xb8b0a2, 0.75));
+const sun = new THREE.DirectionalLight(0xfff6e8, 0.95);
+sun.position.set(-30, 45, 20);
+sun.castShadow = true;
+sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left: -55, right: 55, top: 55, bottom: -55, near: 1, far: 160 });
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: 0xe7e3da, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+const board = new THREE.Mesh(new THREE.BoxGeometry(N + 1, 0.3, N + 1), new THREE.MeshStandardMaterial({ color: 0xd2cdc2, roughness: 1 }));
+board.position.y = -0.149; board.receiveShadow = true; scene.add(board);
+
+function makeInst(geo, mat, cap, shadow = true) {
+  const m = new THREE.InstancedMesh(geo, mat, cap);
+  m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+  m.castShadow = shadow; m.receiveShadow = true; m.count = 0;
+  m.frustumCulled = false;
+  scene.add(m);
+  return m;
+}
+const matSolid = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.65 });
+const matFlat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.65, flatShading: true });
+const matGlass = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.18, metalness: 0.35, flatShading: true });
+const matGlassSmooth = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.18, metalness: 0.35 });
+const matConcrete = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0 });
+
+const SHAPES = [
+  { n: 3, rot: 0, sx: 1.05, sz: 1.05 },
+  { n: 4, rot: Math.PI / 4, sx: 1.0, sz: 1.0 },
+  { n: 5, rot: 0, sx: 1.0, sz: 1.0 },
+  { n: 6, rot: 0, sx: 1.0, sz: 1.0 },
+  { n: 40, rot: 0, sx: 0.82, sz: 1.04 },
+];
+const CAP_FLOORS = 30000;
+const slabM = SHAPES.map(s => makeInst(new THREE.CylinderGeometry(1, 1, 1, s.n), s.n > 10 ? matSolid : matFlat, CAP_FLOORS));
+const glassM = SHAPES.map(s => makeInst(new THREE.CylinderGeometry(1, 1, 1, s.n), s.n > 10 ? matGlassSmooth : matGlass, CAP_FLOORS));
+const box = new THREE.BoxGeometry(1, 1, 1);
+const houseSlabM = makeInst(box, matSolid, 12000);
+const houseGlassM = makeInst(box, matGlass, 12000);
+const poolM = makeInst(box, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1 }), N * N, false);
+const concM = makeInst(box, matConcrete, 40000);           // Sichtbeton (Industrie)
+const slitM = makeInst(box, matGlass, 20000);               // Fensterschlitze
+const chimM = makeInst(new THREE.CylinderGeometry(1, 1, 1, 12), matConcrete, N * N * 2);
+const roadM = makeInst(box, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 }), N * N, false);
+const markM = makeInst(box, new THREE.MeshBasicMaterial({ color: 0xffffff }), N * N, false);
+const tileM = makeInst(box, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }), N * N, false);
+const metroM = makeInst(box, matSolid, N * N);
+const waterM = makeInst(box, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.08, metalness: 0.2 }), N * N, false);
+const pathM = makeInst(box, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }), N * N * 4, false);
+const treeM = makeInst(new THREE.IcosahedronGeometry(1, 0), matFlat, N * N * 6);
+const trunkM = makeInst(new THREE.CylinderGeometry(1, 1, 1, 5), matSolid, N * N * 6);
+
+// Markierung des automatisch berechneten Zentrums
+const centerG = new THREE.Group();
+{
+  const g = new THREE.MeshStandardMaterial({ color: 0xd8b65c, roughness: 0.3, metalness: 0.6, transparent: true, opacity: 0.9 });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.7, 0.05, 8, 48), g);
+  ring.rotation.x = Math.PI / 2; ring.position.y = 0.06;
+  const dot = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.05, 24), g);
+  dot.position.y = 0.05;
+  centerG.add(ring, dot);
+}
+scene.add(centerG);
+
+const selBox = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+  new THREE.LineBasicMaterial({ color: 0xffd257 }));
+selBox.visible = false; scene.add(selBox);
+const hover = new THREE.Mesh(new THREE.BoxGeometry(1, 0.06, 1), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, depthWrite: false }));
+hover.visible = false; scene.add(hover);
+
+const C = c => new THREE.Color(c);
+const COL = {
+  road: C(0x3a3e44), ave: C(0x2c3035), mark: C(0xe8e4d8),
+  zone: { 2: C(0x9fd18f), 3: C(0x92b2ea), 4: C(0x8fd6de), 5: C(0xeec27f) },
+  lotGrass: C(0xb9cda6), lotPlaza: C(0xd3cfc6), lotInd: C(0xa29e95),
+  slab: { 2: C(0xf7f6f2), 3: C(0xeceae4), 4: C(0xdfe3e7) },
+  glass: { 2: C(0x7fa3c2), 3: C(0x5a90c9), 4: C(0x2e4a66) },
+  houseGlass: C(0x6f95b6), white: C(0xf7f6f2), pool: C(0x4fb6dd),
+  conc: C(0xa7a39b), concDark: C(0x8d8981), concLight: C(0xbab6ad), slit: C(0x33373b),
+  metro: C(0xf2f0ea), metroSign: C(0x2f62c9),
+  parkGrass: C(0x8fbf6f), water: C(0x4f9fcf), path: C(0xe6dcc4), trunk: C(0x7a6248),
+  trees: [C(0x4f8f3f), C(0x5f9f45), C(0x3f7a3a), C(0x6aa84f)], rim: C(0xf4f2ec),
+};
+
+function put(m, n, x, y, z, ry, sx, sy, sz, col) {
+  if (n >= m.instanceMatrix.count) return;
+  const a = m.instanceMatrix.array, o = n * 16, c = Math.cos(ry), s = Math.sin(ry);
+  a[o] = c * sx; a[o + 1] = 0; a[o + 2] = -s * sx; a[o + 3] = 0;
+  a[o + 4] = 0; a[o + 5] = sy; a[o + 6] = 0; a[o + 7] = 0;
+  a[o + 8] = s * sz; a[o + 9] = 0; a[o + 10] = c * sz; a[o + 11] = 0;
+  a[o + 12] = x; a[o + 13] = y; a[o + 14] = z; a[o + 15] = 1;
+  const ca = m.instanceColor.array, oc = n * 3;
+  ca[oc] = col.r; ca[oc + 1] = col.g; ca[oc + 2] = col.b;
+}
+// Box in lokalen Koordinaten eines gedrehten Gebaeudes
+function putLocal(m, n, cx, cz, rot, lx, y, lz, sx, sy, sz, col) {
+  const c = Math.cos(rot), s = Math.sin(rot);
+  put(m, n, cx + lx * c + lz * s, y, cz - lx * s + lz * c, rot, sx, sy, sz, col);
+}
+
+let overlay = "";   // "", "lv", "traffic"
+const tmpC = new THREE.Color();
+const lvColor = v => tmpC.setHSL(0.6 - 0.6 * v, 0.55, 0.62 - 0.12 * v);
+const congColor = c => tmpC.setHSL(clamp(0.33 - 0.33 * (c - 0.4) / 0.9, 0, 0.33), 0.75, 0.5);
+
+function build() {
+  const cnt = new Map();
+  const next = m => { const n = cnt.get(m) || 0; cnt.set(m, n + 1); return n; };
+  const half = N / 2;
+  for (let i = 0; i < N * N; i++) {
+    const t = S.type[i], gx = i % N, gz = (i / N) | 0, x = gx + 0.5 - half, z = gz + 0.5 - half;
+    if (t === T.ROAD) {
+      const ave = S.lvl[i] === 2;
+      put(roadM, next(roadM), x, 0.012, z, 0, 1, 0.024, 1, overlay === "traffic" ? congColor(S.cong[i]) : ave ? COL.ave : COL.road);
+      if (ave && overlay !== "traffic") {
+        const h = (gx > 0 && S.type[i - 1] === T.ROAD) || (gx < N - 1 && S.type[i + 1] === T.ROAD);
+        put(markM, next(markM), x, 0.026, z, 0, h ? 0.9 : 0.08, 0.004, h ? 0.08 : 0.9, COL.mark);
+      }
+      continue;
+    }
+    if (t === T.PARK) { buildPark(next, i, gx, gz, x, z); continue; }
+    if (t === T.METRO) {
+      put(tileM, next(tileM), x, 0.01, z, 0, 0.96, 0.02, 0.96, COL.lotPlaza);
+      put(metroM, next(metroM), x, 0.12, z, 0, 0.6, 0.2, 0.4, COL.metro);
+      put(metroM, next(metroM), x, 0.25, z, 0, 0.75, 0.03, 0.55, COL.metro);
+      put(metroM, next(metroM), x + 0.3, 0.38, z - 0.2, 0, 0.12, 0.12, 0.03, COL.metroSign);
+      continue;
+    }
+    if (isPart(i)) continue;
+    const L = S.lvl[i], anchor = isAnchor(i);
+    const mw = anchor ? S.mw[i] : 1, mh = anchor ? S.mh[i] : 1;
+    const bx = x + (mw - 1) / 2, bz = z + (mh - 1) / 2, tileS = mw - 0.04, tileZ = mh - 0.04;
+    if (overlay === "lv") put(tileM, next(tileM), bx, 0.01, bz, 0, tileS, 0.02, tileZ, lvColor(landValue(i)));
+    else if (overlay === "traffic" && t !== T.EMPTY) put(tileM, next(tileM), bx, 0.01, bz, 0, tileS, 0.02, tileZ, congColor(S.cong[i]));
+    if (t === T.EMPTY) continue;
+    const small = isSmallHouse(i), cap = capFor(i);
+    if (!overlay) {
+      const tc = L === 0 ? COL.zone[t] : t === T.I ? COL.lotInd : small ? COL.lotGrass : COL.lotPlaza;
+      put(tileM, next(tileM), bx, 0.01, bz, 0, tileS, 0.02, tileZ, tc);
+    }
+    if (L === 0) continue;
+    const h1 = hash(i, 1), h2 = hash(i, 2), h3 = hash(i, 3), h4 = hash(i, 4), h5 = hash(i, 5);
+    const base = anchor && mw !== mh ? Math.floor(h1 * 2) * Math.PI : Math.floor(h1 * 4) * Math.PI / 2;
+
+    if (small) {
+      const dir = h2 < 0.5 ? 1 : -1;
+      // Vorderseite zur Strasse, Pool hinten im Garten
+      let rdx = 0, rdz = 0;
+      search: for (const dist of [1, 2]) for (const [dx, dz] of [[0, 1], [1, 0], [0, -1], [-1, 0]]) {
+        const nx = gx + dx * dist, nz = gz + dz * dist;
+        if (inside(nx, nz) && S.type[idx(nx, nz)] === T.ROAD) { rdx = dx; rdz = dz; break search; }
+      }
+      const hb = rdx || rdz ? Math.atan2(-rdx, -rdz) : base;
+      const hx = x + rdx * 0.12, hz = z + rdz * 0.12;
+      for (let k = 0; k < L; k++) {
+        const r = hb + k * 0.22 * dir;
+        const ox = k === 0 ? 0 : Math.cos(hb) * 0.1 * k * dir, oz = k === 0 ? 0 : -Math.sin(hb) * 0.1 * k * dir;
+        put(houseGlassM, next(houseGlassM), hx + ox, k * FH + FH / 2, hz + oz, r, 0.6, FH - SLAB, 0.46, COL.houseGlass);
+        put(houseSlabM, next(houseSlabM), hx + ox - Math.cos(r) * 0.17, k * FH + FH / 2, hz + oz + Math.sin(r) * 0.17, r, 0.27, FH - SLAB, 0.5, COL.white);
+        put(houseSlabM, next(houseSlabM), hx + ox, (k + 1) * FH - SLAB / 2, hz + oz, r, 0.78, SLAB, 0.6, COL.white);
+      }
+      if (h3 < 0.45) {   // Pool ca. 8 x 4 m mit weissem Rand, hinter dem Haus
+        const found = rdx || rdz, ax = found ? -rdx : Math.sin(hb), az = found ? -rdz : Math.cos(hb);
+        const qx = x + ax * 0.3, qz = z + az * 0.3;
+        put(houseSlabM, next(houseSlabM), qx, 0.025, qz, hb, 0.6, 0.05, 0.3, COL.rim);
+        put(poolM, next(poolM), qx, 0.03, qz, hb, 0.52, 0.045, 0.22, COL.pool);
+      }
+      continue;
+    }
+
+    if (t === T.I) { buildIndustry(next, i, bx, bz, L, cap, anchor, base, h2, h3, mw, mh); continue; }
+
+    // gewundener Turm (Wohnen, Gewerbe, IT); zusammengelegt = breiter, weniger Drall
+    const si = anchor && mw !== mh ? (h4 < 0.5 ? 1 : 4) : Math.floor(h4 * SHAPES.length), sh = SHAPES[si];
+    const twist = (h2 < 0.5 ? 1 : -1) * (0.035 + 0.09 * h3) * (anchor ? (mw === mh ? 0.5 : 0) : 1);
+    const step = h5 < 0.3 ? 3 : 1;
+    const taper = 0.25 * hash(i, 6);
+    const RX = anchor ? halfExt(mw) : (t === T.C ? 0.44 : R1), RZ = anchor ? halfExt(mh) : RX;
+    const INSET = { 2: anchor ? 0.9 : 0.84, 3: 0.93, 4: 0.95 };
+    const sc = COL.slab[t], mix = mixOf(i);
+    for (let k = 0; k <= L; k++) {
+      const r = base + sh.rot + Math.floor(k / step) * step * twist;
+      const f = 1 - taper * k / Math.max(L, 10);
+      put(slabM[si], next(slabM[si]), bx, k * FH + SLAB / 2, bz, r, f * RX * sh.sx, SLAB, f * RZ * sh.sz, sc);
+      if (k < L) {
+        // Nutzung dieser Etage: unten Laeden, Mitte Bueros, oben Wohnungen
+        const use = mix ? (k < mix.c ? T.C : k < mix.c + mix.o ? T.O : T.R) : t;
+        const inset = INSET[use];
+        put(glassM[si], next(glassM[si]), bx, k * FH + SLAB + (FH - SLAB) / 2, bz, r, f * RX * sh.sx * inset, FH - SLAB, f * RZ * sh.sz * inset, COL.glass[use]);
+      }
+    }
+  }
+
+  // Park: Wiese, Teiche (nur innen), geschwungene Wege, Baeume
+  function buildPark(next, i, gx, gz, x, z) {
+    const water = isParkWater(gx, gz);
+    if (overlay === "lv") put(tileM, next(tileM), x, 0.01, z, 0, 1, 0.02, 1, lvColor(landValue(i)));
+    else put(tileM, next(tileM), x, 0.012, z, 0, 1.0, 0.024, 1.0, COL.parkGrass);
+    if (water) { put(waterM, next(waterM), x, 0.02, z, 0, 1.0, 0.012, 1.0, COL.water); return; }
+    // Wege zu den Nachbarn (nach Osten und Sueden), Knoten leicht verschoben -> geschwungen
+    const [px, pz] = parkNode(gx, gz);
+    for (const [dx, dz] of [[1, 0], [0, 1]]) {
+      const nx = gx + dx, nz = gz + dz;
+      if (!inside(nx, nz) || S.type[idx(nx, nz)] !== T.PARK || isParkWater(nx, nz)) continue;
+      if (hash(Math.min(i, idx(nx, nz)) * 2 + dx, 31) > S.parkPaths) continue;
+      const [qx, qz] = parkNode(nx, nz);
+      const ax = px - N / 2, az = pz - N / 2, bxx = qx - N / 2, bzz = qz - N / 2;
+      const len = Math.hypot(bxx - ax, bzz - az);
+      put(pathM, next(pathM), (ax + bxx) / 2, 0.028, (az + bzz) / 2, Math.atan2(-(bzz - az), bxx - ax), len + 0.07, 0.006, 0.075, COL.path);
+    }
+    // Baeume, nicht direkt auf dem Weg-Knoten
+    const nt = Math.round(hash(i, 40) * 5 * S.parkTrees);
+    for (let k = 0; k < nt; k++) {
+      const tx = gx + 0.1 + 0.8 * hash(i, 41 + k), tz = gz + 0.1 + 0.8 * hash(i, 51 + k);
+      if (Math.hypot(tx - px, tz - pz) < 0.18) continue;
+      const r = 0.1 + 0.09 * hash(i, 61 + k), th = 0.08 + 0.1 * hash(i, 71 + k);
+      put(trunkM, next(trunkM), tx - N / 2, th / 2, tz - N / 2, 0, 0.018, th, 0.018, COL.trunk);
+      put(treeM, next(treeM), tx - N / 2, th + r * 0.8, tz - N / 2, hash(i, 81 + k) * 6, r, r * 1.15, r, COL.trees[Math.floor(hash(i, 91 + k) * 4)]);
+    }
+  }
+
+  // Brutalistische Industrie: Sichtbeton, schwere Baender, Fensterschlitze, Treppenturm
+  function buildIndustry(next, i, cx, cz, L, cap, anchor, rot, h2, h3, mw, mh) {
+    const W = anchor ? mw * 0.86 : 0.82, D = anchor ? mh * 0.76 : 0.66;
+    if (cap <= 4 && !anchor) {
+      // Halle mit Sheddach (Saegezahn)
+      const hh = 0.12 + 0.08 * L;
+      putLocal(concM, next(concM), cx, cz, rot, 0, hh / 2 + 0.02, 0, W, hh, D, COL.conc);
+      for (let k = 0; k < 4; k++) {
+        const lx = -W / 2 + W / 8 + k * W / 4;
+        putLocal(concM, next(concM), cx, cz, rot, lx, hh + 0.05, 0, 0.03, 0.09, D * 0.96, COL.concLight);
+        putLocal(slitM, next(slitM), cx, cz, rot, lx + 0.05, hh + 0.04, 0, 0.012, 0.07, D * 0.94, COL.slit);
+      }
+      putLocal(slitM, next(slitM), cx, cz, rot, 0, 0.09, D / 2 + 0.002, W * 0.7, 0.05, 0.01, COL.slit);
+      const ch = 0.4 + 0.15 * L;
+      putLocal(chimM, next(chimM), cx, cz, rot, W / 2 - 0.08, ch / 2, -D / 2 + 0.08, 0.055, ch, 0.055, COL.concDark);
+      return;
+    }
+    // Turm: jede Etage Betonband + zurueckgesetzter Fensterschlitz, kein Drall
+    for (let k = 0; k < L; k++) {
+      const y = k * FH;
+      const band = k % 4 === 3;                           // alle 4 Etagen ein schweres Band
+      const ws = band ? 1.06 : 1, ds = band ? 1.06 : 1;
+      putLocal(concM, next(concM), cx, cz, rot, 0, y + FH * 0.66, 0, W * ws, FH * 0.68, D * ds, k % 2 ? COL.conc : COL.concDark);
+      putLocal(slitM, next(slitM), cx, cz, rot, 0, y + FH * 0.16, 0, W * 0.9, FH * 0.32, D * 0.9, COL.slit);
+      // auskragender Block alle 6 Etagen
+      if (k % 6 === 4 && k + 2 < L) {
+        const side = (Math.floor(k / 6) + (h2 < 0.5 ? 0 : 1)) % 2 ? 1 : -1;
+        putLocal(concM, next(concM), cx, cz, rot, side * W * 0.55, y + FH, D * 0.1, W * 0.45, FH * 2, D * 0.6, COL.concLight);
+        putLocal(slitM, next(slitM), cx, cz, rot, side * (W * 0.55 + W * 0.226), y + FH, D * 0.1, 0.01, FH * 0.3, D * 0.5, COL.slit);
+      }
+    }
+    const top = L * FH;
+    putLocal(concM, next(concM), cx, cz, rot, 0, top + 0.03, 0, W * 1.04, 0.06, D * 1.04, COL.concLight);
+    // fensterloser Treppenturm an der Seite
+    const coreH = top + FH * 2;
+    putLocal(concM, next(concM), cx, cz, rot, -W * 0.5 - 0.05, coreH / 2, -D * 0.25, 0.18 * (anchor ? 1.6 : 1), coreH, 0.22 * (anchor ? 1.6 : 1), COL.concDark);
+    // Schornsteine auf dem Dach
+    const ch = 0.6 + 0.4 * h3;
+    putLocal(chimM, next(chimM), cx, cz, rot, W * 0.28, top + ch / 2, D * 0.2, anchor ? 0.09 : 0.05, ch, anchor ? 0.09 : 0.05, COL.concDark);
+    putLocal(chimM, next(chimM), cx, cz, rot, W * 0.1, top + ch * 0.35, -D * 0.22, anchor ? 0.07 : 0.04, ch * 0.7, anchor ? 0.07 : 0.04, COL.conc);
+  }
+
+  for (const m of [...slabM, ...glassM, houseSlabM, houseGlassM, poolM, concM, slitM, chimM, roadM, markM, tileM, metroM, waterM, pathM, treeM, trunkM]) {
+    m.count = Math.min(cnt.get(m) || 0, m.instanceMatrix.count);
+    m.instanceMatrix.needsUpdate = true;
+    m.instanceColor.needsUpdate = true;
+  }
+  centerG.position.set(S.cx - half, 0, S.cz - half);
+}
+
+// =====================================================================
+//  BEDIENUNG
+// =====================================================================
+let tool = "cam", speed = 1, painting = false, lastCell = -1, dirty = true;
+const $ = id => document.getElementById(id);
+const fmt = n => Math.round(n).toLocaleString("de-AT");
+const TOOL_COLOR = { road: 0x888888, ave: 0x555555, R: 0x5fb34e, C: 0x4b7fd8, O: 0x22b2c2, I: 0xe09b2d, metro: 0x2f62c9, park: 0x8fbf6f, bull: 0xef6a5b, cam: 0xffffff };
+
+function setTool(t) {
+  tool = t;
+  document.querySelectorAll(".tool").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
+  controls.mouseButtons = { LEFT: t === "cam" ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+  controls.touches = { ONE: t === "cam" ? THREE.TOUCH.ROTATE : -1, TWO: THREE.TOUCH.DOLLY_PAN };
+  hover.material.color.setHex(TOOL_COLOR[t]);
+  hover.scale.set(1, 1, 1);
+}
+function setSpeed(v) {
+  speed = v;
+  document.querySelectorAll(".speed button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.speed === v)));
+}
+function setOverlay(o) {
+  overlay = overlay === o ? "" : o;
+  $("lvbtn").setAttribute("aria-pressed", String(overlay === "lv"));
+  $("trbtn").setAttribute("aria-pressed", String(overlay === "traffic"));
+  dirty = true;
+}
+document.querySelectorAll(".tool").forEach(b => b.addEventListener("click", () => setTool(b.dataset.tool)));
+document.querySelectorAll(".speed button").forEach(b => b.addEventListener("click", () => setSpeed(+b.dataset.speed)));
+$("tax").addEventListener("input", e => { S.tax = e.target.value / 100; $("taxv").textContent = e.target.value + " %"; });
+$("lvbtn").addEventListener("click", () => setOverlay("lv"));
+$("trbtn").addEventListener("click", () => setOverlay("traffic"));
+$("steep").addEventListener("input", e => { S.steep = +e.target.value; $("steepV").textContent = String(S.steep).replace(".", ","); drawProfile(); });
+for (const [id, key] of [["pWater", "parkWater"], ["pPaths", "parkPaths"], ["pTrees", "parkTrees"]])
+  $(id).addEventListener("input", e => { S[key] = +e.target.value; dirty = true; });
+$("mixAt").addEventListener("input", e => { S.mixAt = +e.target.value; $("mixAtV").textContent = e.target.value; dirty = true; });
+$("mergeOn").addEventListener("change", e => { S.mergeOn = e.target.checked; });
+$("mergeAt").addEventListener("input", e => { S.mergeAt = +e.target.value; $("mergeAtV").textContent = e.target.value; });
+function setCollapsed(c) {
+  $("stats").classList.toggle("collapsed", c);
+  $("collapse").textContent = c ? "›" : "‹";
+  $("collapse").setAttribute("aria-expanded", String(!c));
+  $("collapse").title = c ? "Menü ausklappen (M)" : "Menü einklappen (M)";
+  try { localStorage.setItem("spiralstadt-menu", c ? "1" : "0"); } catch (e) {}
+}
+$("collapse").addEventListener("click", () => setCollapsed(!$("stats").classList.contains("collapsed")));
+try { if (localStorage.getItem("spiralstadt-menu") === "1") setCollapsed(true); } catch (e) {}
+$("newbtn").addEventListener("click", () => $("dialog").classList.add("show"));
+$("dlgno").addEventListener("click", () => $("dialog").classList.remove("show"));
+$("dlgyes").addEventListener("click", () => { $("dialog").classList.remove("show"); newCity(); syncInputs(); dirty = true; updateUI(); save(); });
+function syncInputs() {
+  $("tax").value = Math.round(S.tax * 100); $("taxv").textContent = Math.round(S.tax * 100) + " %";
+  $("steep").value = S.steep; $("steepV").textContent = String(S.steep).replace(".", ",");
+  $("pWater").value = S.parkWater; $("pPaths").value = S.parkPaths; $("pTrees").value = S.parkTrees;
+  $("mixAt").value = S.mixAt; $("mixAtV").textContent = S.mixAt;
+  $("mergeOn").checked = S.mergeOn; $("mergeAt").value = S.mergeAt; $("mergeAtV").textContent = S.mergeAt;
+}
+
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+function cellAt(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const o = ray.ray.origin, d = ray.ray.direction;
+  if (d.y >= 0) return -1;
+  const tt = -o.y / d.y, x = Math.floor(o.x + d.x * tt + N / 2), z = Math.floor(o.z + d.z * tt + N / 2);
+  return inside(x, z) ? idx(x, z) : -1;
+}
+
+function canApply(i) {
+  const t = S.type[i];
+  if (tool === "road") return t !== T.ROAD && S.money >= COST.road;
+  if (tool === "ave") return t === T.ROAD && S.lvl[i] !== 2 && S.money >= COST.ave;
+  if (ZONE_KEY[tool]) return (t === T.EMPTY || (isZone(t) && t !== ZONE_KEY[tool])) && S.roadDist[i] >= 1 && S.roadDist[i] <= ZONE_DEPTH;
+  if (tool === "metro") return (t === T.EMPTY || isZone(t)) && S.money >= COST.metro;
+  if (tool === "park") return (t === T.EMPTY || isZone(t)) && S.money >= COST.park;
+  if (tool === "bull") return t === T.ROAD || isZone(t) || t === T.METRO || t === T.PARK;
+  return false;
+}
+function clearCell(i) {   // Gebaeude auf diesem Feld entfernen (auch zusammengelegte)
+  if (S.merge[i] >= 0) demolishMerged(S.merge[i]);
+  S.lvl[i] = 0;
+}
+function apply(i, batch = false) {
+  if (i < 0 || !canApply(i)) return;
+  const t = S.type[i];
+  if (tool === "road") { clearCell(i); S.type[i] = T.ROAD; S.lvl[i] = 1; S.money -= COST.road; computeRoadDist(); }
+  else if (tool === "ave") { S.lvl[i] = 2; S.money -= COST.ave; }
+  else if (ZONE_KEY[tool]) { clearCell(i); S.type[i] = ZONE_KEY[tool]; }
+  else if (tool === "metro") { clearCell(i); S.type[i] = T.METRO; S.money -= COST.metro; }
+  else if (tool === "park") { clearCell(i); S.type[i] = T.PARK; S.money -= COST.park; computeParkBoost(); }
+  else if (tool === "bull") {
+    if (t !== T.ROAD && S.lvl[i] > 0) S.money -= COST.bull;
+    clearCell(i); S.type[i] = T.EMPTY; S.lvl[i] = 0;
+    if (t === T.ROAD) computeRoadDist();
+  }
+  dirty = true;
+  if (!batch) { computeTraffic(); updateUI(); }
+}
+// Zonen und Abreissen: als Rechteck aufziehen
+const RECT_TOOLS = new Set(["R", "C", "O", "I", "bull", "park"]);
+let rectStart = -1, rectEnd = -1;
+function rectBounds() {
+  const x0 = Math.min(rectStart % N, rectEnd % N), x1 = Math.max(rectStart % N, rectEnd % N);
+  const z0 = Math.min((rectStart / N) | 0, (rectEnd / N) | 0), z1 = Math.max((rectStart / N) | 0, (rectEnd / N) | 0);
+  return [x0, z0, x1, z1];
+}
+function showRect() {
+  const [x0, z0, x1, z1] = rectBounds(), half = N / 2;
+  hover.position.set((x0 + x1 + 1) / 2 - half, 0.05, (z0 + z1 + 1) / 2 - half);
+  hover.scale.set(x1 - x0 + 1, 1, z1 - z0 + 1);
+  hover.material.opacity = 0.4; hover.visible = true;
+  $("itype").textContent = "Rechteck " + (x1 - x0 + 1) + " × " + (z1 - z0 + 1) + " Felder";
+}
+// Wo Felder zu weit von einer Strasse weg sind: Strassenraster anlegen (wie die Startbloecke)
+function autoRoads(x0, z0, x1, z1) {
+  let need = false;
+  for (let z = z0; z <= z1 && !need; z++) for (let x = x0; x <= x1; x++) {
+    const j = idx(x, z);
+    if (S.roadDist[j] > ZONE_DEPTH && S.type[j] !== T.METRO && S.type[j] !== T.PARK) { need = true; break; }
+  }
+  if (!need) return;
+  // Raster leicht ueber das Rechteck hinaus, damit auch die Raender erreichbar sind
+  const ex0 = Math.max(0, x0 - 2), ez0 = Math.max(0, z0 - 2), ex1 = Math.min(N - 1, x1 + 2), ez1 = Math.min(N - 1, z1 + 2);
+  for (let z = ez0; z <= ez1; z++) for (let x = ex0; x <= ex1; x++) {
+    const onLine = ((x - GRID_PHASE) % 5 + 5) % 5 === 0 || ((z - GRID_PHASE) % 5 + 5) % 5 === 0;
+    if (!onLine) continue;
+    const j = idx(x, z);
+    const inRect = x >= x0 && x <= x1 && z >= z0 && z <= z1;
+    // ausserhalb des Rechtecks nur Verbindungen ueber freie Flaechen
+    if (S.type[j] === T.ROAD || S.type[j] === T.METRO || S.money < COST.road) continue;
+    if (S.lvl[j] > 0 || S.merge[j] >= 0) continue;            // keine Gebaeude abreissen
+    if (!inRect && S.type[j] !== T.EMPTY) continue;
+    S.type[j] = T.ROAD; S.lvl[j] = 1; S.money -= COST.road;
+  }
+  computeRoadDist();
+}
+function applyRect() {
+  const [x0, z0, x1, z1] = rectBounds();
+  if (ZONE_KEY[tool]) autoRoads(x0, z0, x1, z1);
+  for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) apply(idx(x, z), true);
+  computeRoadDist(); computeParkBoost(); computeTraffic(); updateUI();
+  rectStart = rectEnd = -1;
+  hover.scale.set(1, 1, 1);
+}
+function line(a, b, f) {
+  let x0 = a % N, z0 = (a / N) | 0; const x1 = b % N, z1 = (b / N) | 0;
+  const dx = Math.abs(x1 - x0), dz = Math.abs(z1 - z0), sx = x0 < x1 ? 1 : -1, sz = z0 < z1 ? 1 : -1;
+  let err = dx - dz;
+  for (;;) {
+    f(idx(x0, z0)); if (x0 === x1 && z0 === z1) break;
+    const e2 = 2 * err;
+    if (e2 > -dz && e2 < dx) { if (Math.random() < 0.5) { err -= dz; x0 += sx; } else { err += dx; z0 += sz; } f(idx(x0, z0)); }
+    else { if (e2 > -dz) { err -= dz; x0 += sx; } if (e2 < dx) { err += dx; z0 += sz; } }
+  }
+}
+
+const cv = renderer.domElement;
+cv.addEventListener("contextmenu", e => e.preventDefault());
+
+// Kamera um die Hochachse drehen
+const yAxis = new THREE.Vector3(0, 1, 0);
+function orbit(angle) {
+  const off = camera.position.clone().sub(controls.target).applyAxisAngle(yAxis, angle);
+  camera.position.copy(controls.target).add(off);
+  camera.lookAt(controls.target);
+}
+// Trackpad: zwei Finger links/rechts = drehen, hoch/runter = zoomen (macht OrbitControls)
+cv.addEventListener("wheel", e => {
+  if (e.ctrlKey) return;                         // Pinch-Geste: normal zoomen lassen
+  const dx = e.deltaMode === 1 ? e.deltaX * 16 : e.deltaX;
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  if (Math.abs(dx) > 0.5) orbit(-dx * 0.004);
+  if (Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); e.stopImmediatePropagation(); }
+}, { capture: true, passive: false });
+let downX = 0, downY = 0;
+cv.addEventListener("pointerdown", e => {
+  downX = e.clientX; downY = e.clientY;
+  if (e.button !== 0 || tool === "cam") return;
+  const i = cellAt(e); if (i < 0) return;
+  if (RECT_TOOLS.has(tool)) { rectStart = rectEnd = i; showRect(); return; }
+  painting = tool !== "metro"; lastCell = i; apply(i);
+});
+cv.addEventListener("pointermove", e => {
+  const i = cellAt(e);
+  if (rectStart >= 0) { if (i >= 0) { rectEnd = i; showRect(); } return; }
+  showInfo(i);
+  if (i < 0 || tool === "cam") { hover.visible = false; return; }
+  const half = N / 2, x = i % N, z = (i / N) | 0, big = 0.5;
+  hover.position.set(x + big - half, 0.05, z + big - half);
+  hover.visible = true;
+  hover.material.opacity = canApply(i) || painting ? 0.5 : 0.18;
+  if (painting && i !== lastCell) { line(lastCell, i, apply); lastCell = i; }
+});
+// Ansehen: kurzer Klick ohne Ziehen waehlt ein Gebaeude aus
+cv.addEventListener("pointerup", e => {
+  if (tool !== "cam" || e.button !== 0 || Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
+  const i = cellAt(e);
+  selected = i < 0 ? -1 : (S.merge[i] >= 0 ? S.merge[i] : i);
+  if (selected >= 0 && (S.type[selected] === T.EMPTY || S.type[selected] === T.ROAD)) selected = -1;
+  showDetail();
+});
+addEventListener("pointerup", () => {
+  if (rectStart >= 0) { applyRect(); save(); }
+  if (painting) save();
+  painting = false;
+});
+cv.addEventListener("pointerleave", () => { hover.visible = false; });
+
+const keys = new Set();
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  const m = { "1": "road", "2": "ave", "3": "R", "4": "C", "5": "O", "6": "I", "7": "metro", "8": "bull", "9": "park", Escape: "cam" }[e.key];
+  if (m) setTool(m);
+  if (e.key === " ") { e.preventDefault(); setSpeed(speed === 0 ? 1 : 0); }
+  if (e.key === "m" || e.key === "M") setCollapsed(!$("stats").classList.contains("collapsed"));
+  keys.add(e.key.toLowerCase());
+});
+addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
+function panKeys(dt) {
+  if (keys.has("q")) orbit(dt * 1.6);
+  if (keys.has("e")) orbit(-dt * 1.6);
+  // Zoomen mit + / - oder R / F
+  const zin = keys.has("+") || keys.has("=") || keys.has("r"), zout = keys.has("-") || keys.has("f");
+  if (zin || zout) {
+    const off = camera.position.clone().sub(controls.target);
+    const d = clamp(off.length() * Math.exp((zin ? -1.4 : 1.4) * dt), controls.minDistance, controls.maxDistance);
+    camera.position.copy(controls.target).add(off.setLength(d));
+  }
+  const f = new THREE.Vector3(); camera.getWorldDirection(f); f.y = 0; f.normalize();
+  const r = new THREE.Vector3(-f.z, 0, f.x), v = new THREE.Vector3();
+  if (keys.has("w") || keys.has("arrowup")) v.add(f);
+  if (keys.has("s") || keys.has("arrowdown")) v.sub(f);
+  if (keys.has("d") || keys.has("arrowright")) v.add(r);
+  if (keys.has("a") || keys.has("arrowleft")) v.sub(r);
+  if (v.lengthSq() === 0) return;
+  v.normalize().multiplyScalar(dt * camera.position.distanceTo(controls.target) * 0.8);
+  camera.position.add(v); controls.target.add(v);
+}
+
+let selected = -1;
+$("dclose").addEventListener("click", () => { selected = -1; showDetail(); });
+function buildingName(b) {
+  const t = S.type[b], u = useOf(b);
+  if (t === T.PARK) return "Park";
+  if (t === T.METRO) return "U-Bahn-Station";
+  if (S.lvl[b] === 0) return ZONE_NAME[t] + " (noch frei)";
+  if (isSmallHouse(b)) return "Einfamilienhaus";
+  if (u.mix) return "Hochhaus · Mischnutzung";
+  return { 2: "Wohnturm", 3: "Geschäftshaus", 4: "IT-Büroturm", 5: capFor(b) <= 4 && !isAnchor(b) ? "Fabrikhalle" : "Fabrikturm" }[t];
+}
+function showDetail() {
+  const box = $("detail");
+  if (selected < 0) { box.hidden = true; selBox.visible = false; return; }
+  const b = selected, t = S.type[b], L = S.lvl[b], u = useOf(b);
+  const w = isAnchor(b) ? S.mw[b] : 1, h = isAnchor(b) ? S.mh[b] : 1;
+  box.hidden = false;
+  $("dtitle").textContent = buildingName(b);
+  const rows = [];
+  rows.push(["Grundstück", w + " × " + h + " Felder (" + fmt(w * h * 256) + " m²)"]);
+  if (isZone(t) && L > 0) {
+    rows.push(["Stockwerke", L + " (Ziel " + capFor(b) + ")"]);
+    rows.push(["Höhe", fmt(L * 3.2) + " m"]);
+    if (!isSmallHouse(b)) rows.push(["Geschossfläche", fmt(L * 75 * areaOf(b)) + " m²"]);
+    if (u.res) rows.push(["Einwohner", fmt(u.res)]);
+    if (u.jobsC) rows.push(["Jobs Gewerbe", fmt(u.jobsC)]);
+    if (u.jobsO) rows.push(["Jobs IT", fmt(u.jobsO)]);
+    if (u.jobsI) rows.push(["Jobs Industrie", fmt(u.jobsI)]);
+    if (u.goods) rows.push(["Waren/Monat", fmt(u.goods)]);
+    rows.push(["Steuern/Monat", "₡ " + fmt(taxOf(b))]);
+    rows.push(["Fahrten/Monat", fmt(S.trips[b] * 30)]);
+  }
+  const [cx, cz] = centerOf(b);
+  rows.push(["Bodenwert", Math.round(landValue(b) * 100) + " %"]);
+  rows.push(["Zum Zentrum", fmt(Math.hypot(cx - S.cx, cz - S.cz) * 16) + " m"]);
+  rows.push(["Verkehr", Math.round(S.cong[b] * 100) + " % · " + congText(S.cong[b])]);
+  if (isZone(t)) rows.push(["Bremst Wachstum", trafficFactor(S.cong[b]) < 1 ? Math.round((1 - trafficFactor(S.cong[b])) * 100) + " %" : "nein"]);
+  if (S.poll[b] > 0.05) rows.push(["Abgase", Math.round(S.poll[b] * 100) + " %"]);
+  if (S.parkBoost[b] > 0.01) rows.push(["Park-Bonus", "+" + Math.round(S.parkBoost[b] * 100) + " %"]);
+  if (isZone(t)) rows.push(["Wirtschaft (Stadt)", Math.round(clamp(S.st.econ, 0, 1.2) * 100) + " %"]);
+  $("dkv").innerHTML = rows.map(([a, v]) => `<span class="label">${a}</span><span>${v}</span>`).join("");
+  // Nutzungs-Balken
+  const mix = $("dmix");
+  if (u.mix) {
+    const tot = L, seg = (n, c) => `<i style="width:${100 * n / tot}%;background:${c}"></i>`;
+    mix.hidden = false;
+    mix.innerHTML = seg(u.mix.c, "var(--zone-c)") + seg(u.mix.o, "var(--zone-o)") + seg(u.mix.r, "var(--zone-r)");
+    mix.title = `Läden ${u.mix.c} · Büros ${u.mix.o} · Wohnungen ${u.mix.r} Stockwerke`;
+    if (!$("dmixl")) mix.insertAdjacentHTML("afterend", '<div class="mixlegend" id="dmixl"></div>');
+    $("dmixl").innerHTML = `<span><b style="background:var(--zone-c)"></b>Läden ${u.mix.c}</span><span><b style="background:var(--zone-o)"></b>Büros ${u.mix.o}</span><span><b style="background:var(--zone-r)"></b>Wohnungen ${u.mix.r}</span>`;
+  } else { mix.hidden = true; if ($("dmixl")) $("dmixl").remove(); }
+  // Markierung
+  const half = N / 2, x0 = b % N, z0 = (b / N) | 0, hgt = Math.max(0.3, (isZone(t) ? L : 1) * FH + 0.1);
+  selBox.position.set(x0 + w / 2 - half, hgt / 2, z0 + h / 2 - half);
+  selBox.scale.set(w * 0.98, hgt, h * 0.98);
+  selBox.visible = true;
+}
+const congText = c => c < 0.6 ? "flüssig" : c < 0.9 ? "dicht" : c < 1.2 ? "zäh" : "Stau";
+function showInfo(i) {
+  if (i < 0) { $("itype").textContent = "Zeig auf ein Feld"; $("ikv").innerHTML = ""; return; }
+  const b = S.merge[i] >= 0 ? S.merge[i] : i;
+  const t = S.type[b], L = S.lvl[b];
+  const name = t === T.ROAD ? (S.lvl[b] === 2 ? "Allee (4-spurig)" : "Straße (2-spurig)")
+    : t === T.METRO ? "U-Bahn-Station" : t === T.PARK ? (isParkWater(i % N, (i / N) | 0) ? "Park (Teich)" : "Park") : t === T.EMPTY ? "Freie Fläche" : ZONE_NAME[t];
+  $("itype").textContent = name;
+  const rows = [];
+  if (t !== T.ROAD) {
+    const [bx, bz] = centerOf(b);
+    rows.push(["Bodenwert", Math.round(landValue(b) * 100) + " %"]);
+    rows.push(["Zum Zentrum", Math.round(Math.hypot(bx - S.cx, bz - S.cz) * 16) + " m"]);
+  }
+  rows.push(["Verkehr", Math.round(S.cong[b] * 100) + " % · " + congText(S.cong[b])]);
+  if (isZone(t)) {
+    if (isAnchor(b)) rows.push(["Grundstück", S.mw[b] + " × " + S.mh[b] + " zusammengelegt"]);
+    rows.push(["Stockwerke", L + " / " + capFor(b)]);
+    const u = useOf(b);
+    if (t === T.R) rows.push(["Bewohner", fmt(u.res)]);
+    else rows.push(["Arbeitsplätze", fmt(u.jobs)]);
+    if (S.poll[b] > 0.05) rows.push(["Abgase", Math.round(S.poll[b] * 100) + " %"]);
+    if (S.roadDist[b] > ZONE_DEPTH) rows.push(["Achtung", "keine Straße"]);
+  } else if (t === T.EMPTY) {
+    rows.push(["Zonen möglich", S.roadDist[i] >= 1 && S.roadDist[i] <= ZONE_DEPTH ? "ja" : "nein, zu weit weg"]);
+  } else if (t === T.METRO) rows.push(["Wirkung", "−45 % Autoverkehr im Umkreis"]);
+  else if (t === T.PARK) rows.push(["Wirkung", "hebt Bodenwert im Umkreis"]);
+  if (S.parkBoost[b] > 0.01 && t !== T.PARK) rows.push(["Park-Bonus", "+" + Math.round(S.parkBoost[b] * 100) + " % Bodenwert"]);
+  $("ikv").innerHTML = rows.map(([a, v]) => `<span class="label">${a}</span><span>${v}</span>`).join("");
+}
+
+function drawProfile() {
+  const c = $("profile"), g = c.getContext("2d"), W = c.width, Hc = c.height, H = S.st.hmax || 3, maxD = 22;
+  g.clearRect(0, 0, W, Hc);
+  const pad = 14, yOf = f => Hc - pad - (Hc - 2 * pad) * f / Math.max(H, 3);
+  const dHouse = -Math.log(HOUSE_LV) * lambda();
+  // Bereich der Einfamilienhaeuser
+  g.fillStyle = "rgba(95,179,78,0.18)";
+  g.fillRect(W * dHouse / maxD, 0, W - W * dHouse / maxD, Hc - pad);
+  g.strokeStyle = "rgba(255,255,255,0.12)"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, Hc - pad + 0.5); g.lineTo(W, Hc - pad + 0.5); g.stroke();
+  // Kurve
+  g.beginPath();
+  for (let px = 0; px <= W; px += 4) {
+    const d = maxD * px / W, lv = lvAt(d);
+    const c = H * Math.pow(lv, S.steep);
+    const f = lv < HOUSE_LV ? Math.min(3, c) : Math.max(Math.min(4, H), c);
+    px ? g.lineTo(px, yOf(f)) : g.moveTo(px, yOf(f));
+  }
+  g.strokeStyle = "#f1eee7"; g.lineWidth = 3; g.stroke();
+  // typische Hoehe (nicht-Spitzen): gestrichelt
+  g.beginPath();
+  for (let px = 0; px <= W; px += 4) {
+    const d = maxD * px / W, lv = lvAt(d), c = H * 0.5 * Math.pow(lv, S.steep);
+    const f = lv < HOUSE_LV ? Math.min(3, c) : Math.max(Math.min(4, H), c);
+    px ? g.lineTo(px, yOf(f)) : g.moveTo(px, yOf(f));
+  }
+  g.setLineDash([6, 6]); g.strokeStyle = "rgba(241,238,231,0.5)"; g.lineWidth = 2; g.stroke(); g.setLineDash([]);
+  g.fillStyle = "#a7adb5"; g.font = "20px IBM Plex Mono, monospace";
+  g.fillText(H + " St.", 6, 22);
+  g.fillText("Einfamilienhäuser", Math.min(W * dHouse / maxD + 8, W - 210), 46);
+  g.fillText("0 m", 4, Hc - 1); g.fillText(maxD * 16 + " m", W - 70, Hc - 1);
+}
+function bar(el, v, color) {
+  const h = Math.abs(v) * 50;
+  el.style.background = color;
+  el.style.height = h + "%";
+  el.style.top = v >= 0 ? (50 - h) + "%" : "50%";
+  el.style.opacity = v >= 0 ? 1 : 0.45;
+}
+function updateUI() {
+  const s = S.st;
+  $("date").textContent = MONTHS[S.month % 12] + " " + (1 + Math.floor(S.month / 12));
+  $("money").firstChild.textContent = "₡ " + fmt(S.money);
+  const d = S.lastDelta;
+  $("mdelta").textContent = (d >= 0 ? "+" : "−") + fmt(Math.abs(d)) + "/Mon.";
+  $("mdelta").style.color = d >= 0 ? "var(--good)" : "var(--bad)";
+  $("money").style.color = S.money < 0 ? "var(--bad)" : "";
+  $("pop").textContent = fmt(s.pop);
+  $("mini").textContent = fmt(s.pop) + " Einwohner · " + Math.round(s.unemp * 100) + " % arbeitslos";
+  $("jobs").textContent = fmt(s.jobs);
+  $("unemp").textContent = Math.round(s.unemp * 100) + " %";
+  $("unemp").style.color = s.unemp > 0.15 ? "var(--bad)" : s.unemp > 0.08 ? "var(--warn)" : "";
+  $("hmax").textContent = s.hmax + " Stockwerke";
+  const [, jam] = worstJam();
+  $("traffic").textContent = congText(jam) + " (" + Math.round(jam * 100) + " %)";
+  $("traffic").style.color = jam > 1.15 ? "var(--bad)" : jam > 0.85 ? "var(--warn)" : "";
+  $("econ").style.width = Math.round(clamp(s.econ, 0, 1) * 100) + "%";
+  $("econv").textContent = Math.round(clamp(s.econ, 0, 1.2) * 100) + " %";
+  $("gprod").textContent = fmt(s.goodsProd);
+  $("gsold").textContent = fmt(s.sales);
+  $("gimp").textContent = fmt(s.imported);
+  $("budget").innerHTML = Object.entries(S.budget).map(([k, v]) =>
+    `<span class="label">${k}</span><span style="color:${v >= 0 ? "var(--good)" : "var(--bad)"}">${v >= 0 ? "+" : "−"}${fmt(Math.abs(v))}</span>`).join("");
+  $("lam").textContent = "EFH ab " + Math.round(-Math.log(HOUSE_LV) * lambda() * 16) + " m";
+  drawProfile();
+  const [lvl, txt] = advice();
+  $("advice").className = lvl; $("advice").textContent = txt;
+  bar($("dR"), S.dem[T.R], "var(--zone-r)");
+  bar($("dC"), S.dem[T.C], "var(--zone-c)");
+  bar($("dO"), S.dem[T.O], "var(--zone-o)");
+  bar($("dI"), S.dem[T.I], "var(--zone-i)");
+}
+
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// =====================================================================
+//  START UND SCHLEIFE
+// =====================================================================
+const TICK = 0.25;            // Monat = 2 s bei 1x
+let acc = 0, ticks = 0, lastBuild = 0, prev = performance.now();
+function loop(now) {
+  const dt = Math.min(0.1, (now - prev) / 1000); prev = now;
+  acc += dt * speed;
+  let uiDirty = false;
+  while (acc >= TICK) {
+    acc -= TICK;
+    if (growthTick()) dirty = true;
+    if (overlay === "traffic") dirty = true;
+    ticks++; uiDirty = true;
+    if (ticks % TICKS_PER_MONTH === 0) { monthTick(); if (S.month % 3 === 0) save(); }
+  }
+  if (uiDirty) { updateUI(); if (selected >= 0) { if (S.merge[selected] >= 0 && S.merge[selected] !== selected) selected = S.merge[selected]; showDetail(); } }
+  if (dirty && now - lastBuild > 120) { build(); dirty = false; lastBuild = now; }
+  panKeys(dt);
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+
+function start(data) {
+  let ok = false;
+  if (data && data.v) ok = load(data);
+  if (!ok) { try { ok = load(JSON.parse(localStorage.getItem("spiralstadt4"))); } catch (e) { ok = false; } }
+  if (!ok) newCity();
+  computeStats(); computePollution(); computeTraffic();
+  syncInputs(); setTool("road"); setSpeed(1);
+  build(); updateUI();
+  window.claude?.hot?.snapshot?.(() => serialize());
+  requestAnimationFrame(loop);
+}
+window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
+window.__S = S;
+}
+</script>
+</body>
+</html>
