@@ -142,6 +142,8 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
     <div class="row"><span class="label" style="color:var(--muted)">Höhenprofil</span><span id="lam" style="font-family:var(--font-mono);color:var(--muted)"></span></div>
     <div class="row" style="margin-top:4px"><label for="steep" style="color:var(--muted)">Steilheit <b id="steepV" style="color:var(--paper);font-family:var(--font-mono)">2,5</b></label>
     <input id="steep" type="range" min="0.5" max="5" step="0.1" value="2.5" aria-label="Steilheit der Höhenkurve"></div>
+    <div class="row"><label for="extreme" style="color:var(--muted)">Extrem <b id="extremeV" style="color:var(--paper);font-family:var(--font-mono)">100 %</b></label>
+    <input id="extreme" type="range" min="0" max="1" step="0.05" value="1" aria-label="Wie extrem die Skyline wird"></div>
     <canvas id="profile" width="480" height="120" style="width:100%;height:60px;display:block;margin-top:4px" aria-label="Erlaubte Höhe nach Abstand zum Zentrum"></canvas>
   </div>
   <div>
@@ -296,7 +298,7 @@ const S = {
   cong: new Float32Array(N * N),     // Auslastung der Strassen im Umkreis (1 = voll)
   cx: N / 2, cz: N / 2,                    // Zentrum (automatisch: Schwerpunkt der Stadt)
   money: 30000, month: 0, tax: 0.10,
-  mergeOn: true, mergeAt: 12, steep: 2.5, seed: 1, mixAt: 15,
+  mergeOn: true, mergeAt: 12, steep: 2.5, seed: 1, mixAt: 15, extreme: 1,
   parkWater: 0.35, parkPaths: 0.55, parkTrees: 0.6,     // Park-Parameter (fuer alle Parks)
   parkBoost: new Float32Array(N * N),
   dem: { 2: 0.4, 3: 0, 4: 0, 5: 0.1 },
@@ -397,16 +399,22 @@ function computeParkBoost() {
   }
 }
 function heightLimit() {
+  // Extrem: bis 200 Stockwerke (wie Blender: Stockwerke Mitte 201)
   const p = clamp((S.st.pop || 0) / 3500, 0, 1);
-  return Math.round(3 + 67 * Math.pow(p, 0.6) * clamp(S.st.econ || 0, 0, 1));
+  return Math.round(3 + (67 + 133 * S.extreme) * Math.pow(p, 0.6) * clamp(S.st.econ || 0, 0, 1));
 }
+// Mindesthoehe im Hochhaus-Bereich (Blender: Stockwerke Rand 14)
+const towerBase = H => Math.min(Math.round(4 + 10 * S.extreme), H);
+const isCore = i => landValue(i) > CORE_LV;
 // Ziel-Hoehe fuer ein einzelnes Grundstueck
 function capSingle(i, t) {
   const lv = landValue(i), H = S.st.hmax || 3;
   // Steilheit k: Hoehe = H * e^(-k * d / Lambda). Im Turm-Bereich mindestens 4 Stockwerke.
-  const k = S.steep, base = Math.min(4, H);
+  const k = S.steep, base = towerBase(H);
   // Jedes Grundstueck hat eigene Ambitionen: etwa jedes sechste wird eine Spitze
-  const hv = hash(i, 7), spire = hv < 0.17 ? 1 : 0.35 + 0.35 * hv;
+  const hv = hash(i, 7);
+  let spire = hv < 0.17 ? 1 : 0.35 + 0.35 * hv;
+  if (S.extreme > 0.5 && isAnchor(i) && isCore(i)) spire = Math.max(spire, 0.8);   // breite Nadeln im Kern
   const Hs = H * spire;
   if (t === T.R) { const c = Math.round(H * Math.pow(lv, k)); return lv < HOUSE_LV ? clamp(c, 1, 3) : Math.max(base, Math.round(Hs * Math.pow(lv, k))); }
   if (t === T.C) return Math.max(Math.min(3, H), Math.round(Hs * 0.6 * Math.pow(lv, k)));
@@ -417,6 +425,8 @@ function capSingle(i, t) {
 // Zusammengelegt: gleiche Gesamtflaeche wie 4 Einzeltuerme -> breiter und niedriger
 function capFor(i) {
   const t = S.type[i];
+  // Extrem: im Kern bleiben verschmolzene Tuerme so hoch wie eine Spitze (breit UND hoch)
+  if (isAnchor(i) && S.extreme > 0.5 && isCore(i)) return capSingle(i, t);
   if (isAnchor(i)) return Math.max(1, Math.round(S.mw[i] * S.mh[i] * capSingle(i, t) / AFwh(S.mw[i], S.mh[i])));
   return capSingle(i, t);
 }
@@ -594,7 +604,7 @@ function tryMerge(rnd) {
     if (!isZone(t)) continue;
     let ok = true, sum = 0;
     for (const j of cells) {
-      if (S.type[j] !== t || S.merge[j] >= 0 || S.lvl[j] < S.mergeAt || S.roadDist[j] > ZONE_DEPTH || isSmallHouse(j) || landValue(j) > CORE_LV) { ok = false; break; }
+      if (S.type[j] !== t || S.merge[j] >= 0 || S.lvl[j] < S.mergeAt || S.roadDist[j] > ZONE_DEPTH || isSmallHouse(j) || (landValue(j) > CORE_LV && S.extreme <= 0.5)) { ok = false; break; }
       sum += S.lvl[j];
     }
     if (!ok || rnd() > 0.06) continue;
@@ -606,7 +616,7 @@ function tryMerge(rnd) {
   for (let a = 0; a < N * N; a++) {
     if (!isAnchor(a) || S.lvl[a] === 0) continue;
     const t = S.type[a], x = a % N, z = (a / N) | 0, w = S.mw[a], h = S.mh[a];
-    if (singleEq(a) < S.mergeAt || landValue(a) > CORE_LV) continue;
+    if (singleEq(a) < S.mergeAt || (landValue(a) > CORE_LV && S.extreme <= 0.5)) continue;
     for (const [nx, nz, horiz] of [[x + w, z, true], [x, z + h, false]]) {
       if (!inside(nx, nz)) continue;
       const b = S.merge[idx(nx, nz)];
@@ -741,14 +751,14 @@ function newCity() {
 function serialize() {
   return { v: 4, type: Array.from(S.type), lvl: Array.from(S.lvl), merge: Array.from(S.merge), mw: Array.from(S.mw), mh: Array.from(S.mh), cx: S.cx, cz: S.cz,
     money: S.money, month: S.month, tax: S.tax, dem: S.dem, mergeOn: S.mergeOn, mergeAt: S.mergeAt, steep: S.steep, seed: S.seed,
-    parkWater: S.parkWater, parkPaths: S.parkPaths, parkTrees: S.parkTrees, mixAt: S.mixAt };
+    parkWater: S.parkWater, parkPaths: S.parkPaths, parkTrees: S.parkTrees, mixAt: S.mixAt, extreme: S.extreme };
 }
 function load(o) {
   if (!o || o.v !== 4 || !o.type || o.type.length !== N * N) return false;
   S.type.set(o.type); S.lvl.set(o.lvl); S.merge.set(o.merge); S.mw.set(o.mw); S.mh.set(o.mh); S.cx = o.cx; S.cz = o.cz;
   S.money = o.money; S.month = o.month; S.tax = o.tax; S.dem = o.dem;
   S.mergeOn = o.mergeOn !== false; S.mergeAt = o.mergeAt || 12; S.steep = o.steep || 2.5; S.seed = o.seed || 1;
-  S.mixAt = o.mixAt || 15;
+  S.mixAt = o.mixAt || 15; S.extreme = o.extreme != null ? o.extreme : 1;
   if (o.parkWater != null) { S.parkWater = o.parkWater; S.parkPaths = o.parkPaths; S.parkTrees = o.parkTrees; }
   computeRoadDist(); computeParkBoost(); computeStats(); computeTraffic();
   return true;
@@ -959,9 +969,10 @@ function build() {
 
     // gewundener Turm (Wohnen, Gewerbe, IT); zusammengelegt = breiter, weniger Drall
     const si = anchor && mw !== mh ? (h4 < 0.5 ? 1 : 4) : Math.floor(h4 * SHAPES.length), sh = SHAPES[si];
-    const twist = (h2 < 0.5 ? 1 : -1) * (0.035 + 0.09 * h3) * (anchor ? (mw === mh ? 0.5 : 0) : 1);
+    // sehr hohe Tuerme drehen sich pro Stockwerk weniger (Blender: 1 Grad pro Stockwerk)
+    const twist = (h2 < 0.5 ? 1 : -1) * (0.035 + 0.09 * h3) * (anchor ? (mw === mh ? 0.5 : 0) : 1) * Math.min(1, 40 / Math.max(L, 1));
     const step = h5 < 0.3 ? 3 : 1;
-    const taper = 0.25 * hash(i, 6);
+    const taper = 0.25 * hash(i, 6) * (1 - S.extreme) + 0.45 * S.extreme;   // Extrem: oben 55 % (Blender: Groesse oben 0.55)
     const RX = anchor ? halfExt(mw) : (t === T.C ? 0.44 : R1), RZ = anchor ? halfExt(mh) : RX;
     const INSET = { 2: anchor ? 0.9 : 0.84, 3: 0.93, 4: 0.95 };
     const sc = COL.slab[t], mix = mixOf(i);
@@ -1087,6 +1098,7 @@ document.querySelectorAll(".speed button").forEach(b => b.addEventListener("clic
 $("tax").addEventListener("input", e => { S.tax = e.target.value / 100; $("taxv").textContent = e.target.value + " %"; });
 $("lvbtn").addEventListener("click", () => setOverlay("lv"));
 $("trbtn").addEventListener("click", () => setOverlay("traffic"));
+$("extreme").addEventListener("input", e => { S.extreme = +e.target.value; $("extremeV").textContent = Math.round(S.extreme * 100) + " %"; computeStats(); drawProfile(); dirty = true; });
 $("steep").addEventListener("input", e => { S.steep = +e.target.value; $("steepV").textContent = String(S.steep).replace(".", ","); drawProfile(); });
 for (const [id, key] of [["pWater", "parkWater"], ["pPaths", "parkPaths"], ["pTrees", "parkTrees"]])
   $(id).addEventListener("input", e => { S[key] = +e.target.value; dirty = true; });
@@ -1107,6 +1119,7 @@ $("dlgno").addEventListener("click", () => $("dialog").classList.remove("show"))
 $("dlgyes").addEventListener("click", () => { $("dialog").classList.remove("show"); newCity(); syncInputs(); dirty = true; updateUI(); save(); });
 function syncInputs() {
   $("tax").value = Math.round(S.tax * 100); $("taxv").textContent = Math.round(S.tax * 100) + " %";
+  $("extreme").value = S.extreme; $("extremeV").textContent = Math.round(S.extreme * 100) + " %";
   $("steep").value = S.steep; $("steepV").textContent = String(S.steep).replace(".", ",");
   $("pWater").value = S.parkWater; $("pPaths").value = S.parkPaths; $("pTrees").value = S.parkTrees;
   $("mixAt").value = S.mixAt; $("mixAtV").textContent = S.mixAt;
@@ -1398,7 +1411,7 @@ function drawProfile() {
   for (let px = 0; px <= W; px += 4) {
     const d = maxD * px / W, lv = lvAt(d);
     const c = H * Math.pow(lv, S.steep);
-    const f = lv < HOUSE_LV ? Math.min(3, c) : Math.max(Math.min(4, H), c);
+    const f = lv < HOUSE_LV ? Math.min(3, c) : Math.max(towerBase(H), c);
     px ? g.lineTo(px, yOf(f)) : g.moveTo(px, yOf(f));
   }
   g.strokeStyle = "#f1eee7"; g.lineWidth = 3; g.stroke();
@@ -1406,7 +1419,7 @@ function drawProfile() {
   g.beginPath();
   for (let px = 0; px <= W; px += 4) {
     const d = maxD * px / W, lv = lvAt(d), c = H * 0.5 * Math.pow(lv, S.steep);
-    const f = lv < HOUSE_LV ? Math.min(3, c) : Math.max(Math.min(4, H), c);
+    const f = lv < HOUSE_LV ? Math.min(3, c) : Math.max(towerBase(H), c);
     px ? g.lineTo(px, yOf(f)) : g.moveTo(px, yOf(f));
   }
   g.setLineDash([6, 6]); g.strokeStyle = "rgba(241,238,231,0.5)"; g.lineWidth = 2; g.stroke(); g.setLineDash([]);
