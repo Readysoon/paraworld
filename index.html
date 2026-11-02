@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>ParaWorld</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -144,6 +144,8 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
     <input id="steep" type="range" min="0.5" max="5" step="0.1" value="2.5" aria-label="Steilheit der Höhenkurve"></div>
     <div class="row"><label for="extreme" style="color:var(--muted)">Extrem <b id="extremeV" style="color:var(--paper);font-family:var(--font-mono)">100 %</b></label>
     <input id="extreme" type="range" min="0" max="1" step="0.05" value="1" aria-label="Wie extrem die Skyline wird"></div>
+    <div class="row"><label for="order" style="color:var(--muted)">Ordnung <b id="orderV" style="color:var(--paper);font-family:var(--font-mono)">100 %</b></label>
+    <input id="order" type="range" min="0" max="1" step="0.05" value="1" aria-label="Wie geordnet die Stadt aussieht"></div>
     <canvas id="profile" width="480" height="120" style="width:100%;height:60px;display:block;margin-top:4px" aria-label="Erlaubte Höhe nach Abstand zum Zentrum"></canvas>
   </div>
   <div>
@@ -168,6 +170,17 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
     <input id="tax" type="range" min="0" max="25" step="1" value="10">
   </div>
   <div class="sect">
+    <h2>Menschen <span id="agClock" style="float:right;font-family:var(--font-mono);letter-spacing:0;color:var(--paper)">06:00</span></h2>
+    <div class="row"><label for="agOn" style="color:var(--muted)"><input type="checkbox" id="agOn" checked> zeigen</label>
+    <label for="agGroup" style="color:var(--muted)">1 Punkt = <b id="agGroupV" style="color:var(--paper);font-family:var(--font-mono)">2</b></label></div>
+    <input id="agGroup" type="range" min="0" max="5" step="1" value="1" style="max-width:none;width:100%" aria-label="Wie viele Menschen ein Punkt darstellt">
+    <div class="kv" style="margin-top:4px">
+      <span class="label"><b style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#ffb21e;margin-right:5px"></b>im Auto</span><span id="agCars">0</span>
+      <span class="label"><b style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#2f6bff;margin-right:6px"></b>zu Fuß</span><span id="agWalk">0</span>
+      <span class="label">in der U-Bahn</span><span id="agMetro">0</span>
+    </div>
+  </div>
+  <div class="sect">
     <h2>Parks</h2>
     <div class="row"><label for="pWater" style="color:var(--muted)">Wasser</label><input id="pWater" type="range" min="0" max="0.8" step="0.05" value="0.35"></div>
     <div class="row"><label for="pPaths" style="color:var(--muted)">Wege</label><input id="pPaths" type="range" min="0" max="1" step="0.05" value="0.55"></div>
@@ -177,8 +190,9 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
     <h2>Hochhäuser</h2>
     <div class="row"><label for="mixAt" style="color:var(--muted)">Mischnutzung ab <b id="mixAtV" style="color:var(--paper);font-family:var(--font-mono)">15</b> St.</label>
     <input id="mixAt" type="range" min="4" max="60" step="1" value="15" aria-label="Mischnutzung ab Stockwerken"></div>
-    <div class="row" style="margin-top:6px"><label for="mergeOn" style="color:var(--muted)"><input type="checkbox" id="mergeOn" checked> aktiv, ab <b id="mergeAtV" style="color:var(--paper);font-family:var(--font-mono)">12</b> Stockw.</label>
+    <div class="row" style="margin-top:6px"><label for="mergeOn" style="color:var(--muted)"><input type="checkbox" id="mergeOn" checked> Verschmelzen ab <b id="mergeAtV" style="color:var(--paper);font-family:var(--font-mono)">12</b> Stockw.</label>
     <input id="mergeAt" type="range" min="4" max="40" step="1" value="12" aria-label="Zusammenlegen ab Stockwerken"></div>
+    <div style="color:var(--muted);font-size:12px">Verschmelzen nur bei Ordnung unter 50 %.</div>
   </div>
   <div class="row">
     <button class="btn" id="lvbtn" aria-pressed="false">Bodenwert</button>
@@ -235,6 +249,7 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
   <b>Allee:</b> über eine Straße ziehen (mehr Kapazität)<br>
   <b>Ansehen (Esc):</b> Gebäude anklicken für Details<br>
   <b>Drehen:</b> rechte Maustaste, Q/E oder 2 Finger links/rechts<br>
+  <b>Neigen:</b> T/G oder ⌥ + 2 Finger hoch/runter (bis auf den Boden)<br>
   <b>Schieben:</b> Shift + rechts oder WASD<br>
   <b>Zoomen:</b> Mausrad, + / − oder R / F<br>
   Große Zonen bekommen automatisch Straßen.<br>
@@ -298,7 +313,7 @@ const S = {
   cong: new Float32Array(N * N),     // Auslastung der Strassen im Umkreis (1 = voll)
   cx: N / 2, cz: N / 2,                    // Zentrum (automatisch: Schwerpunkt der Stadt)
   money: 30000, month: 0, tax: 0.10,
-  mergeOn: true, mergeAt: 12, steep: 2.5, seed: 1, mixAt: 15, extreme: 1,
+  mergeOn: true, mergeAt: 12, steep: 2.5, seed: 1, mixAt: 15, extreme: 1, order: 1,
   parkWater: 0.35, parkPaths: 0.55, parkTrees: 0.6,     // Park-Parameter (fuer alle Parks)
   parkBoost: new Float32Array(N * N),
   dem: { 2: 0.4, 3: 0, 4: 0, 5: 0.1 },
@@ -414,10 +429,11 @@ function capSingle(i, t) {
   // Jedes Grundstueck hat eigene Ambitionen: etwa jedes sechste wird eine Spitze
   const hv = hash(i, 7);
   let spire = hv < 0.17 ? 1 : 0.35 + 0.35 * hv;
+  spire = spire + (1 - spire) * S.order;       // Ordnung: alle folgen genau der Kurve (wie Blender)
   if (S.extreme > 0.5 && isAnchor(i) && isCore(i)) spire = Math.max(spire, 0.8);   // breite Nadeln im Kern
   const Hs = H * spire;
   if (t === T.R) { const c = Math.round(H * Math.pow(lv, k)); return lv < HOUSE_LV ? clamp(c, 1, 3) : Math.max(base, Math.round(Hs * Math.pow(lv, k))); }
-  if (t === T.C) return Math.max(Math.min(3, H), Math.round(Hs * 0.6 * Math.pow(lv, k)));
+  if (t === T.C) return Math.max(Math.min(3, H), Math.round(Hs * (0.6 + 0.4 * S.order) * Math.pow(lv, k)));
   if (t === T.O) return Math.max(base, Math.round(Hs * Math.pow(lv, k)));
   if (t === T.I) return Math.max(1, Math.round(Math.max(2 + 2 * clamp(S.st.econ || 0, 0, 1), H * 0.45 * Math.pow(lv, k))));
   return 0;
@@ -596,7 +612,7 @@ function setBuilding(a, w, h, totalArea) {
   S.lvl[a] = Math.max(1, Math.round(totalArea / AFwh(w, h)));   // Flaeche bleibt gleich
 }
 function tryMerge(rnd) {
-  if (!S.mergeOn) return false;
+  if (!S.mergeOn || S.order >= 0.5) return false;   // Ordnung: schlanke Einzeltuerme wie in Blender
   let changed = false;
   // 1) vier Einzeltuerme (2 x 2) -> ein Gebaeude
   for (let z = 0; z < N - 1; z++) for (let x = 0; x < N - 1; x++) {
@@ -643,24 +659,31 @@ function growthTick(rnd = Math.random) {
   computeTraffic();
   computeParkBoost();
   const E = S.st.econ;
+  worstJamCached = worstJam()[1];
   let changed = false;
   for (let i = 0; i < N * N; i++) {
     const t = S.type[i];
     if (!isZone(t) || isPart(i)) continue;
     const L = S.lvl[i];
     if (S.roadDist[i] > ZONE_DEPTH) { if (L > 0 && rnd() < 0.05) { S.lvl[i]--; changed = true; } continue; }
-    const dem = S.dem[t], cap = capFor(i), lv = landValue(i), tf = trafficFactor(S.cong[i]);
+    // Ordnung: Stau bremst die ganze Stadt gleichmaessig statt einzelne Tuerme (sauberere Form)
+    const tfLocal = trafficFactor(S.cong[i]), tfCity = trafficFactor(worstJamCached * 0.85);
+    // Ordnung: Tuerme mit Mischnutzung wachsen mit dem staerksten Bedarf von Wohnen/Gewerbe/IT
+    const demMix = Math.max(S.dem[T.R], S.dem[T.C], S.dem[T.O]);
+    const dem = t === T.I || isSmallHouse(i) ? S.dem[t] : S.dem[t] * (1 - S.order) + demMix * S.order;
+    const cap = capFor(i), lv = landValue(i), tf = tfLocal * (1 - S.order) + tfCity * S.order;
     if (L < cap && dem > 0 && S.money >= 0) {
       let p = dem * (0.03 + 0.4 * lv) * (0.3 + E) * 1.3;
       if (t !== T.R || !isSmallHouse(i)) p *= 0.7 + 0.6 * (capFor(i) - L) / Math.max(cap, 1);   // weit unter Ziel = schneller
+      p *= 1 + 1.5 * S.order;                   // Ordnung: Tuerme erreichen ihre Zielhoehe schneller, weniger Luecken
       if (t === T.I) p = dem * 0.06 * (0.3 + E);
       if (t === T.R) p *= 1 - 0.7 * S.poll[i];
       p *= tf;
       if (rnd() < p) { S.lvl[i] = L + 1; changed = true; }
     } else if (L > cap) {
       if (rnd() < 0.04) { S.lvl[i] = L - 1; changed = true; }
-    } else if (L > 0 && (dem < -0.3 || S.cong[i] > 1.8)) {
-      const pd = Math.max((-dem - 0.3) * 0.05, (S.cong[i] - 1.8) * 0.03);
+    } else if (L > 0 && (dem < -0.3 || S.cong[i] * (1 - S.order) > 1.8)) {
+      const pd = Math.max((-dem - 0.3) * 0.05, (S.cong[i] * (1 - S.order) - 1.8) * 0.03);
       if (rnd() < pd) { S.lvl[i] = L - 1; changed = true; }
     }
     if (isAnchor(i) && S.lvl[i] === 0) { demolishMerged(i); changed = true; }
@@ -696,6 +719,7 @@ function monthTick() {
   S.money += delta; S.lastDelta = delta; S.budget = b; S.month++;
 }
 
+let worstJamCached = 0;
 function worstJam() {
   let best = -1, v = 0;
   for (let i = 0; i < N * N; i++) if (S.trips[i] > 0 && S.cong[i] > v) { v = S.cong[i]; best = i; }
@@ -751,14 +775,14 @@ function newCity() {
 function serialize() {
   return { v: 4, type: Array.from(S.type), lvl: Array.from(S.lvl), merge: Array.from(S.merge), mw: Array.from(S.mw), mh: Array.from(S.mh), cx: S.cx, cz: S.cz,
     money: S.money, month: S.month, tax: S.tax, dem: S.dem, mergeOn: S.mergeOn, mergeAt: S.mergeAt, steep: S.steep, seed: S.seed,
-    parkWater: S.parkWater, parkPaths: S.parkPaths, parkTrees: S.parkTrees, mixAt: S.mixAt, extreme: S.extreme };
+    parkWater: S.parkWater, parkPaths: S.parkPaths, parkTrees: S.parkTrees, mixAt: S.mixAt, extreme: S.extreme, order: S.order };
 }
 function load(o) {
   if (!o || o.v !== 4 || !o.type || o.type.length !== N * N) return false;
   S.type.set(o.type); S.lvl.set(o.lvl); S.merge.set(o.merge); S.mw.set(o.mw); S.mh.set(o.mh); S.cx = o.cx; S.cz = o.cz;
   S.money = o.money; S.month = o.month; S.tax = o.tax; S.dem = o.dem;
   S.mergeOn = o.mergeOn !== false; S.mergeAt = o.mergeAt || 12; S.steep = o.steep || 2.5; S.seed = o.seed || 1;
-  S.mixAt = o.mixAt || 15; S.extreme = o.extreme != null ? o.extreme : 1;
+  S.mixAt = o.mixAt || 15; S.extreme = o.extreme != null ? o.extreme : 1; S.order = o.order != null ? o.order : 1;
   if (o.parkWater != null) { S.parkWater = o.parkWater; S.parkPaths = o.parkPaths; S.parkTrees = o.parkTrees; }
   computeRoadDist(); computeParkBoost(); computeStats(); computeTraffic();
   return true;
@@ -783,13 +807,13 @@ view.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xdcd8cf);
 scene.fog = new THREE.Fog(0xdcd8cf, 90, 190);
-const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 500);
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.02, 500);
 camera.position.set(-22, 22, 28);
 const controls = new THREE.OrbitControls(camera, renderer.domElement);
 controls.target.set(2, 0, 2);
 controls.enableDamping = true;
-controls.maxPolarAngle = 1.38;
-controls.minDistance = 4; controls.maxDistance = 170;
+controls.maxPolarAngle = 3.0;           // bis auf den Boden; darunter wird der Blick nach oben gekippt
+controls.minDistance = 1.5; controls.maxDistance = 170;
 controls.screenSpacePanning = false;
 controls.update();
 
@@ -827,7 +851,9 @@ const SHAPES = [
   { n: 5, rot: 0, sx: 1.0, sz: 1.0 },
   { n: 6, rot: 0, sx: 1.0, sz: 1.0 },
   { n: 40, rot: 0, sx: 0.82, sz: 1.04 },
+  { n: 40, rot: 0, sx: 1.0, sz: 1.0 },       // Kreis (Ordnung)
 ];
+const TRI = 0, CIRCLE = 5;
 const CAP_FLOORS = 30000;
 const slabM = SHAPES.map(s => makeInst(new THREE.CylinderGeometry(1, 1, 1, s.n), s.n > 10 ? matSolid : matFlat, CAP_FLOORS));
 const glassM = SHAPES.map(s => makeInst(new THREE.CylinderGeometry(1, 1, 1, s.n), s.n > 10 ? matGlassSmooth : matGlass, CAP_FLOORS));
@@ -872,7 +898,7 @@ const COL = {
   lotGrass: C(0xb9cda6), lotPlaza: C(0xd3cfc6), lotInd: C(0xa29e95),
   slab: { 2: C(0xf7f6f2), 3: C(0xeceae4), 4: C(0xdfe3e7) },
   glass: { 2: C(0x7fa3c2), 3: C(0x5a90c9), 4: C(0x2e4a66) },
-  houseGlass: C(0x6f95b6), white: C(0xf7f6f2), pool: C(0x4fb6dd),
+  houseGlass: C(0x6f95b6), glassCalm: C(0x7f9fb9), white: C(0xf7f6f2), pool: C(0x4fb6dd),
   conc: C(0xa7a39b), concDark: C(0x8d8981), concLight: C(0xbab6ad), slit: C(0x33373b),
   metro: C(0xf2f0ea), metroSign: C(0x2f62c9),
   parkGrass: C(0x8fbf6f), water: C(0x4f9fcf), path: C(0xe6dcc4), trunk: C(0x7a6248),
@@ -968,23 +994,29 @@ function build() {
     if (t === T.I) { buildIndustry(next, i, bx, bz, L, cap, anchor, base, h2, h3, mw, mh); continue; }
 
     // gewundener Turm (Wohnen, Gewerbe, IT); zusammengelegt = breiter, weniger Drall
-    const si = anchor && mw !== mh ? (h4 < 0.5 ? 1 : 4) : Math.floor(h4 * SHAPES.length), sh = SHAPES[si];
+    const ordered = S.order >= 0.5;
+    // Ordnung: Nadeln im Kern als gedrehte Dreiecke (wie Shanghai), sonst runde Tuerme
+    const si = ordered ? (isCore(i) ? TRI : CIRCLE)
+      : anchor && mw !== mh ? (h4 < 0.5 ? 1 : 4) : Math.floor(h4 * (SHAPES.length - 1)), sh = SHAPES[si];
     // sehr hohe Tuerme drehen sich pro Stockwerk weniger (Blender: 1 Grad pro Stockwerk)
-    const twist = (h2 < 0.5 ? 1 : -1) * (0.035 + 0.09 * h3) * (anchor ? (mw === mh ? 0.5 : 0) : 1) * Math.min(1, 40 / Math.max(L, 1));
-    const step = h5 < 0.3 ? 3 : 1;
-    const taper = 0.25 * hash(i, 6) * (1 - S.extreme) + 0.45 * S.extreme;   // Extrem: oben 55 % (Blender: Groesse oben 0.55)
+    const twistRnd = (h2 < 0.5 ? 1 : -1) * (0.035 + 0.09 * h3) * (anchor ? (mw === mh ? 0.5 : 0) : 1) * Math.min(1, 40 / Math.max(L, 1));
+    const twist = twistRnd * (1 - S.order) + (-0.0175) * S.order;   // Ordnung: alle -1 Grad pro Stockwerk
+    const step = ordered ? 1 : (h5 < 0.3 ? 3 : 1);
+    const taper = (0.25 * hash(i, 6) * (1 - S.order) + 0.12 * S.order) * (1 - S.extreme) + 0.45 * S.extreme;   // Extrem: oben 55 % (Blender: Groesse oben 0.55)
+    const rot0 = ordered ? 0 : base;
     const RX = anchor ? halfExt(mw) : (t === T.C ? 0.44 : R1), RZ = anchor ? halfExt(mh) : RX;
     const INSET = { 2: anchor ? 0.9 : 0.84, 3: 0.93, 4: 0.95 };
-    const sc = COL.slab[t], mix = mixOf(i);
+    const sc = ordered ? COL.slab[2] : COL.slab[t], mix = mixOf(i);
     for (let k = 0; k <= L; k++) {
-      const r = base + sh.rot + Math.floor(k / step) * step * twist;
+      const r = rot0 + sh.rot + Math.floor(k / step) * step * twist;
       const f = 1 - taper * k / Math.max(L, 10);
       put(slabM[si], next(slabM[si]), bx, k * FH + SLAB / 2, bz, r, f * RX * sh.sx, SLAB, f * RZ * sh.sz, sc);
       if (k < L) {
         // Nutzung dieser Etage: unten Laeden, Mitte Bueros, oben Wohnungen
         const use = mix ? (k < mix.c ? T.C : k < mix.c + mix.o ? T.O : T.R) : t;
-        const inset = INSET[use];
-        put(glassM[si], next(glassM[si]), bx, k * FH + SLAB + (FH - SLAB) / 2, bz, r, f * RX * sh.sx * inset, FH - SLAB, f * RZ * sh.sz * inset, COL.glass[use]);
+        const inset = ordered ? 0.9 : INSET[use];
+        const gc = ordered ? COL.glassCalm : COL.glass[use];   // Ordnung: ein ruhiges Glas fuer alle
+        put(glassM[si], next(glassM[si]), bx, k * FH + SLAB + (FH - SLAB) / 2, bz, r, f * RX * sh.sx * inset, FH - SLAB, f * RZ * sh.sz * inset, gc);
       }
     }
   }
@@ -1068,6 +1100,283 @@ function build() {
 }
 
 // =====================================================================
+//  MENSCHEN: jeder Punkt steht fuer eine Gruppe von Menschen (Regler)
+//  Wohnung -> Arbeit / Einkauf / Park -> zurueck, entlang der Strassen.
+//  Kurze Wege zu Fuss, lange mit dem Auto, mit U-Bahn wenn an beiden Enden eine Station ist.
+// =====================================================================
+const GROUP_STEPS = [1, 2, 5, 10, 20, 50];
+const isPhone = matchMedia("(pointer: coarse)").matches || innerWidth < 760;
+const AG = {
+  on: true,
+  group: isPhone ? 10 : 2,       // 1 Punkt = so viele Menschen
+  clock: 6.0,                    // Uhrzeit 0..24
+  list: [],
+  fields: new Map(),             // Wegkarten: Zielstrasse -> Abstand jeder Strasse zum Ziel
+  nearRoad: new Int32Array(N * N),
+  carsOn: new Uint16Array(N * N),
+  needRebuild: true,
+  lastDay: -1,
+  maxAgents: isPhone ? 15000 : 60000,
+  stats: { cars: 0, walk: 0, metro: 0 },
+};
+const DAY_SECONDS = 60;                         // 1 Tag = 60 s bei 1x
+const SPEED = { car: 26, walk: 7, metro: 70 };   // Felder pro Spielstunde
+const WALK_MAX = 10;                             // Arbeit: bis 10 Felder (ca. 160 m) zu Fuss; Einkauf/Park: bis 18 (290 m)
+
+// naechste Strasse fuer jedes Feld (Breitensuche von allen Strassen aus)
+function computeNearRoad() {
+  const nr = AG.nearRoad; nr.fill(-1);
+  const q = [];
+  for (let i = 0; i < N * N; i++) if (S.type[i] === T.ROAD) { nr[i] = i; q.push(i); }
+  for (let h = 0; h < q.length; h++) {
+    const i = q[h], x = i % N, z = (i / N) | 0;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, nz = z + dz;
+      if (!inside(nx, nz)) continue;
+      const j = idx(nx, nz);
+      if (nr[j] < 0) { nr[j] = nr[i]; q.push(j); }
+    }
+  }
+}
+// Wegkarte zu einer Zielstrasse (einmal berechnet, von allen geteilt)
+function fieldTo(dest) {
+  let f = AG.fields.get(dest);
+  if (f) return f;
+  f = new Uint16Array(N * N).fill(65535);
+  f[dest] = 0;
+  const q = [dest];
+  for (let h = 0; h < q.length; h++) {
+    const i = q[h], x = i % N, z = (i / N) | 0;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, nz = z + dz;
+      if (!inside(nx, nz)) continue;
+      const j = idx(nx, nz);
+      if (S.type[j] === T.ROAD && f[j] === 65535) { f[j] = f[i] + 1; q.push(j); }
+    }
+  }
+  AG.fields.set(dest, f);
+  return f;
+}
+function stepTowards(cell, f, salt) {
+  const x = cell % N, z = (cell / N) | 0;
+  let best = -1, bd = f[cell];
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const o = salt & 3;
+  for (let k = 0; k < 4; k++) {
+    const [dx, dz] = dirs[(k + o) & 3];
+    const nx = x + dx, nz = z + dz;
+    if (!inside(nx, nz)) continue;
+    const j = idx(nx, nz);
+    if (f[j] < bd) { bd = f[j]; best = j; }
+  }
+  return best;
+}
+// naechste U-Bahn-Station (Strassenfeld daneben) im Umkreis von 4 Feldern
+function stationNear(cell) {
+  const x = cell % N, z = (cell / N) | 0;
+  for (let r = 0; r <= 4; r++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+    if (Math.max(Math.abs(dx), Math.abs(dz)) !== r || !inside(x + dx, z + dz)) continue;
+    const j = idx(x + dx, z + dz);
+    if (S.type[j] === T.METRO && AG.nearRoad[j] >= 0) return AG.nearRoad[j];
+  }
+  return -1;
+}
+
+// Gewichtete Zufallsauswahl mit Abstands-Daempfung (nahe Ziele bevorzugt)
+function pickWeighted(list, hx, hz, rnd) {
+  if (!list.length) return -1;
+  let best = -1, bs = -1;
+  for (let k = 0; k < 12; k++) {          // 12 Stichproben, die beste gewinnt
+    const c = list[Math.floor(rnd() * list.length)];
+    const [cx, cz] = centerOf(c.i);
+    const s = c.w * (0.3 + rnd()) / (1 + Math.hypot(cx - hx, cz - hz) / 12);
+    if (s > bs) { bs = s; best = c.i; }
+  }
+  return best;
+}
+
+// Menschen neu aufstellen (nachts, oder wenn sich der Regler aendert)
+function rebuildAgents() {
+  AG.needRebuild = false;
+  AG.fields.clear();
+  computeNearRoad();
+  const jobs = [], shops = [], parks = [], homes = [];
+  for (let i = 0; i < N * N; i++) {
+    const t = S.type[i];
+    if (t === T.PARK) { if ((i % 3) === 0) parks.push({ i, w: 1 }); continue; }
+    if (!isZone(t) || isPart(i) || S.lvl[i] === 0) continue;
+    const u = useOf(i);
+    if (u.res) homes.push({ i, n: u.res });
+    if (u.jobs) jobs.push({ i, w: u.jobs });
+    if (u.shop) shops.push({ i, w: u.shop });
+  }
+  let pop = homes.reduce((a, h) => a + h.n, 0);
+  let G = AG.group;
+  while (pop / G > AG.maxAgents) G = GROUP_STEPS.find(g => g > G) || G * 2;   // Sicherheitsgrenze
+  AG.groupUsed = G;
+  let seed = 7 + S.month;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const list = [];
+  let carry = 0;
+  for (const h of homes) {
+    carry += h.n / G;
+    const n = Math.floor(carry); carry -= n;
+    const [hx, hz] = centerOf(h.i);
+    for (let k = 0; k < n; k++) {
+      const a = { home: h.i, dest: -1, kind: 0, legs: null, state: 0, t0: 0, t1: 0, seg: 0, cell: -1, nxt: -1, p: 0, mode: 0, under: 0, salt: (list.length * 7) & 3 };
+      const r = rnd();
+      if (r < 0.5 && jobs.length) {            // Berufstaetige
+        a.kind = 1; a.dest = pickWeighted(jobs, hx, hz, rnd);
+        a.t0 = 6.3 + rnd() * 2.7; a.t1 = 15.5 + rnd() * 3.2;
+      } else if (r < 0.75 && shops.length) {   // Einkaufen
+        a.kind = 2; a.dest = pickWeighted(shops, hx, hz, rnd);
+        a.t0 = 9 + rnd() * 9; a.t1 = a.t0 + 0.6 + rnd() * 1.2;
+      } else if (r < 0.9 && parks.length) {    // Park
+        a.kind = 3; a.dest = pickWeighted(parks, hx, hz, rnd);
+        a.t0 = 10 + rnd() * 7; a.t1 = a.t0 + 1 + rnd() * 2;
+      } else continue;                         // bleibt zu Hause
+      if (a.dest < 0) continue;
+      list.push(a);
+    }
+  }
+  AG.list = list;
+}
+
+// Weg planen: Etappen (zu Fuss / Auto / U-Bahn)
+function planTrip(a, from, to) {
+  const rs = AG.nearRoad[from], rd = AG.nearRoad[to];
+  if (rs < 0 || rd < 0) return null;
+  const f = fieldTo(rd);
+  const d = f[rs];
+  if (d === 65535) return null;              // keine Strassenverbindung
+  if (d <= WALK_MAX || (a.kind >= 2 && d <= 18)) return [{ mode: 1, from: rs, to: rd }];
+  const sa = stationNear(rs), sb = stationNear(rd);
+  if (sa >= 0 && sb >= 0 && sa !== sb) {
+    return [{ mode: 1, from: rs, to: sa }, { mode: 3, from: sa, to: sb, len: d }, { mode: 1, from: sb, to: rd }];
+  }
+  return [{ mode: 2, from: rs, to: rd }];
+}
+function startLeg(a) {
+  const L = a.legs[a.seg];
+  a.mode = L.mode; a.cell = L.from; a.p = 0;
+  if (L.mode === 3) { a.under = (L.len || 10) / SPEED.metro; a.nxt = -1; return; }
+  a.field = fieldTo(L.to);
+  a.nxt = a.cell === L.to ? -1 : stepTowards(a.cell, a.field, a.salt);
+}
+
+const dayHours = dt => dt * 24 / DAY_SECONDS;
+function tickAgents(dtReal) {
+  if (!AG.on) return;
+  const before = AG.clock;
+  AG.clock += dayHours(dtReal);
+  if (AG.clock >= 24) AG.clock -= 24;
+  const wrapped = AG.clock < before;
+  // nachts um 3 Uhr: Menschen neu verteilen (neue Haeuser, neue Jobs)
+  if (AG.needRebuild || (before < 3 && AG.clock >= 3)) rebuildAgents();
+  if (wrapped) for (const a of AG.list) a.state = 0;
+  const h = AG.clock, dh = dayHours(dtReal);
+  AG.carsOn.fill(0);
+  for (const a of AG.list) if (a.state === 1 || a.state === 3) if (a.mode === 2 && a.cell >= 0) AG.carsOn[a.cell]++;
+  let cars = 0, walk = 0, metro = 0;
+  for (const a of AG.list) {
+    // losgehen
+    if (a.state === 0 && h >= a.t0 && h < a.t0 + 3) {
+      a.legs = planTrip(a, a.home, a.dest); a.seg = 0;
+      if (!a.legs) { a.state = 4; continue; }
+      a.state = 1; startLeg(a);
+    } else if (a.state === 2 && h >= a.t1) {
+      a.legs = planTrip(a, a.dest, a.home); a.seg = 0;
+      if (!a.legs) { a.state = 4; continue; }
+      a.state = 3; startLeg(a);
+    }
+    if (a.state !== 1 && a.state !== 3) continue;
+    // unterwegs
+    if (a.mode === 3) {
+      a.under -= dh; metro++;
+      if (a.under <= 0) { a.seg++; if (a.seg >= a.legs.length) { a.state = a.state === 1 ? 2 : 4; } else startLeg(a); }
+      continue;
+    }
+    let v = a.mode === 2 ? SPEED.car : SPEED.walk;
+    if (a.mode === 2) {
+      // Stau: viele Autos auf einem Feld -> langsamer (Allee hat mehr Platz)
+      // ca. 14 Menschen in Autos pro Strassenfeld (2-spurig), 30 bei Alleen
+      const cap = (S.lvl[a.cell] === 2 ? 30 : 14) / AG.groupUsed;
+      v *= clamp(1.3 - AG.carsOn[a.cell] / Math.max(cap, 0.2), 0.2, 1);
+      cars++;
+    } else walk++;
+    a.p += v * dh;
+    while (a.p >= 1) {
+      if (a.nxt < 0) break;
+      a.p -= 1;
+      a.cell = a.nxt;
+      a.nxt = a.cell === a.legs[a.seg].to ? -1 : stepTowards(a.cell, a.field, a.salt);
+    }
+    if (a.nxt < 0) {                          // Etappe geschafft
+      a.seg++;
+      if (a.seg >= a.legs.length) a.state = a.state === 1 ? 2 : 4;
+      else startLeg(a);
+    }
+  }
+  AG.stats = { cars: cars * AG.groupUsed, walk: walk * AG.groupUsed, metro: metro * AG.groupUsed, dots: cars + walk };
+}
+
+// ---------- Zeichnen: Punkte ----------
+function dotTexture() {
+  const c = document.createElement("canvas"); c.width = c.height = 32;
+  const g = c.getContext("2d");
+  g.beginPath(); g.arc(16, 16, 14, 0, Math.PI * 2); g.fillStyle = "#fff"; g.fill();
+  return new THREE.CanvasTexture(c);
+}
+const DOT = dotTexture();
+// size: echte Groesse (in Feldern) / tan(halber Blickwinkel); minPx/maxPx halten die Punkte sichtbar
+function makeDots(cap, worldSize, color, minPx, maxPx) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(cap * 3), 3));
+  geo.setDrawRange(0, 0);
+  const size = worldSize / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const mat = new THREE.PointsMaterial({ size, map: DOT, color, alphaTest: 0.5, sizeAttenuation: true, depthWrite: true });
+  const dpr = renderer.getPixelRatio();
+  mat.onBeforeCompile = sh => {
+    sh.vertexShader = sh.vertexShader.replace("#include <fog_vertex>",
+      "gl_PointSize = clamp(gl_PointSize, " + (minPx * dpr).toFixed(1) + ", " + (maxPx * dpr).toFixed(1) + ");\n#include <fog_vertex>");
+  };
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  scene.add(pts);
+  return pts;
+}
+const carDots = makeDots(AG.maxAgents, 0.28, 0xffb21e, 3.5, 22);   // Auto ca. 4,5 m
+const walkDots = makeDots(AG.maxAgents, 0.12, 0x2f6bff, 2.4, 10);   // Mensch ca. 2 m (als Punkt)
+
+function drawAgents() {
+  const show = AG.on;
+  carDots.visible = walkDots.visible = show;
+  if (!show) return;
+  const half = N / 2;
+  const cp = carDots.geometry.attributes.position.array, wp = walkDots.geometry.attributes.position.array;
+  let nc = 0, nw = 0;
+  for (const a of AG.list) {
+    if ((a.state !== 1 && a.state !== 3) || a.mode === 3 || a.cell < 0) continue;
+    const x0 = a.cell % N, z0 = (a.cell / N) | 0;
+    let x = x0 + 0.5, z = z0 + 0.5, dx = 0, dz = 0;
+    if (a.nxt >= 0) {
+      const x1 = a.nxt % N, z1 = (a.nxt / N) | 0;
+      dx = x1 - x0; dz = z1 - z0;
+      x += dx * a.p; z += dz * a.p;
+    }
+    // rechts fahren / am Gehsteig gehen
+    const side = a.mode === 2 ? 0.2 : (a.salt & 1 ? 0.42 : -0.42);
+    x += -dz * side; z += dx * side;
+    if (a.mode === 2) { cp[nc * 3] = x - half; cp[nc * 3 + 1] = 0.08; cp[nc * 3 + 2] = z - half; nc++; }
+    else { wp[nw * 3] = x - half; wp[nw * 3 + 1] = 0.05; wp[nw * 3 + 2] = z - half; nw++; }
+  }
+  carDots.geometry.setDrawRange(0, nc); carDots.geometry.attributes.position.needsUpdate = true;
+  walkDots.geometry.setDrawRange(0, nw); walkDots.geometry.attributes.position.needsUpdate = true;
+}
+
+function onRoadsChanged() { AG.fields.clear(); computeNearRoad(); }
+
+// =====================================================================
 //  BEDIENUNG
 // =====================================================================
 let tool = "cam", speed = 1, painting = false, lastCell = -1, dirty = true;
@@ -1079,7 +1388,7 @@ function setTool(t) {
   tool = t;
   document.querySelectorAll(".tool").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
   controls.mouseButtons = { LEFT: t === "cam" ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
-  controls.touches = { ONE: t === "cam" ? THREE.TOUCH.ROTATE : -1, TWO: THREE.TOUCH.DOLLY_PAN };
+  controls.touches = { ONE: t === "cam" ? THREE.TOUCH.ROTATE : -1, TWO: -1 };   // zwei Finger: eigene Geste (s. unten)
   hover.material.color.setHex(TOOL_COLOR[t]);
   hover.scale.set(1, 1, 1);
 }
@@ -1098,6 +1407,10 @@ document.querySelectorAll(".speed button").forEach(b => b.addEventListener("clic
 $("tax").addEventListener("input", e => { S.tax = e.target.value / 100; $("taxv").textContent = e.target.value + " %"; });
 $("lvbtn").addEventListener("click", () => setOverlay("lv"));
 $("trbtn").addEventListener("click", () => setOverlay("traffic"));
+$("agOn").addEventListener("change", e => { AG.on = e.target.checked; });
+$("agGroup").value = GROUP_STEPS.indexOf(AG.group);
+$("agGroup").addEventListener("input", e => { AG.group = GROUP_STEPS[+e.target.value]; AG.needRebuild = true; updateAgentUI(); });
+$("order").addEventListener("input", e => { S.order = +e.target.value; $("orderV").textContent = Math.round(S.order * 100) + " %"; dirty = true; });
 $("extreme").addEventListener("input", e => { S.extreme = +e.target.value; $("extremeV").textContent = Math.round(S.extreme * 100) + " %"; computeStats(); drawProfile(); dirty = true; });
 $("steep").addEventListener("input", e => { S.steep = +e.target.value; $("steepV").textContent = String(S.steep).replace(".", ","); drawProfile(); });
 for (const [id, key] of [["pWater", "parkWater"], ["pPaths", "parkPaths"], ["pTrees", "parkTrees"]])
@@ -1116,9 +1429,10 @@ $("collapse").addEventListener("click", () => setCollapsed(!$("stats").classList
 try { if (localStorage.getItem("spiralstadt-menu") === "1") setCollapsed(true); } catch (e) {}
 $("newbtn").addEventListener("click", () => $("dialog").classList.add("show"));
 $("dlgno").addEventListener("click", () => $("dialog").classList.remove("show"));
-$("dlgyes").addEventListener("click", () => { $("dialog").classList.remove("show"); newCity(); syncInputs(); dirty = true; updateUI(); save(); });
+$("dlgyes").addEventListener("click", () => { $("dialog").classList.remove("show"); newCity(); AG.needRebuild = true; syncInputs(); dirty = true; updateUI(); save(); });
 function syncInputs() {
   $("tax").value = Math.round(S.tax * 100); $("taxv").textContent = Math.round(S.tax * 100) + " %";
+  $("order").value = S.order; $("orderV").textContent = Math.round(S.order * 100) + " %";
   $("extreme").value = S.extreme; $("extremeV").textContent = Math.round(S.extreme * 100) + " %";
   $("steep").value = S.steep; $("steepV").textContent = String(S.steep).replace(".", ",");
   $("pWater").value = S.parkWater; $("pPaths").value = S.parkPaths; $("pTrees").value = S.parkTrees;
@@ -1154,7 +1468,7 @@ function clearCell(i) {   // Gebaeude auf diesem Feld entfernen (auch zusammenge
 function apply(i, batch = false) {
   if (i < 0 || !canApply(i)) return;
   const t = S.type[i];
-  if (tool === "road") { clearCell(i); S.type[i] = T.ROAD; S.lvl[i] = 1; S.money -= COST.road; computeRoadDist(); }
+  if (tool === "road") { clearCell(i); S.type[i] = T.ROAD; S.lvl[i] = 1; S.money -= COST.road; computeRoadDist(); onRoadsChanged(); }
   else if (tool === "ave") { S.lvl[i] = 2; S.money -= COST.ave; }
   else if (ZONE_KEY[tool]) { clearCell(i); S.type[i] = ZONE_KEY[tool]; }
   else if (tool === "metro") { clearCell(i); S.type[i] = T.METRO; S.money -= COST.metro; }
@@ -1162,7 +1476,7 @@ function apply(i, batch = false) {
   else if (tool === "bull") {
     if (t !== T.ROAD && S.lvl[i] > 0) S.money -= COST.bull;
     clearCell(i); S.type[i] = T.EMPTY; S.lvl[i] = 0;
-    if (t === T.ROAD) computeRoadDist();
+    if (t === T.ROAD) { computeRoadDist(); onRoadsChanged(); }
   }
   dirty = true;
   if (!batch) { computeTraffic(); updateUI(); }
@@ -1209,7 +1523,7 @@ function applyRect() {
   const [x0, z0, x1, z1] = rectBounds();
   if (ZONE_KEY[tool]) autoRoads(x0, z0, x1, z1);
   for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) apply(idx(x, z), true);
-  computeRoadDist(); computeParkBoost(); computeTraffic(); updateUI();
+  computeRoadDist(); computeParkBoost(); computeTraffic(); onRoadsChanged(); updateUI();
   rectStart = rectEnd = -1;
   hover.scale.set(1, 1, 1);
 }
@@ -1236,22 +1550,123 @@ function orbit(angle) {
   camera.lookAt(controls.target);
 }
 // Trackpad: zwei Finger links/rechts = drehen, hoch/runter = zoomen (macht OrbitControls)
+// Kamera am Boden: Will sie tiefer, bleibt sie auf Augenhoehe (ca. 50 cm)
+// und der Blick kippt stattdessen nach oben (lookUp = Winkel ueber dem Horizont).
+const GROUND = 0.03;
+let lookUp = 0;
+function groundCam() {
+  const c = camera.position, t = controls.target;
+  const hd = Math.max(0.05, Math.hypot(c.x - t.x, c.z - t.z));
+  if (c.y < GROUND) {                                   // will unter den Boden -> Blick heben
+    lookUp += Math.atan2(GROUND - c.y, hd);
+    c.y = GROUND;
+  } else if (lookUp > 0 && c.y > GROUND + 1e-4) {      // will wieder hoch -> erst Blick senken
+    const a = Math.atan2(c.y - GROUND, hd);
+    if (a > lookUp) { const rest = a - lookUp; lookUp = 0; c.y = GROUND + hd * Math.tan(rest); }
+    else { lookUp -= a; c.y = GROUND; }
+  }
+  lookUp = clamp(lookUp, 0, 1.2);   // bis ca. 70 Grad nach oben
+  t.y = lookUp > 0 ? GROUND + hd * Math.tan(lookUp) : 0;
+  camera.lookAt(t);
+}
+// Kamera neigen: von oben bis auf den Boden
+const sph = new THREE.Spherical();
+function tilt(angle) {
+  const off = camera.position.clone().sub(controls.target);
+  sph.setFromVector3(off);
+  sph.phi = clamp(sph.phi + angle, 0.05, 3.0);
+  off.setFromSpherical(sph);
+  camera.position.copy(controls.target).add(off);
+  camera.lookAt(controls.target);
+}
 cv.addEventListener("wheel", e => {
   if (e.ctrlKey) return;                         // Pinch-Geste: normal zoomen lassen
+  if (e.altKey) {                                // Option + zwei Finger hoch/runter = neigen
+    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    tilt(dy * 0.004);
+    e.preventDefault(); e.stopImmediatePropagation(); return;
+  }
   const dx = e.deltaMode === 1 ? e.deltaX * 16 : e.deltaX;
   const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
   if (Math.abs(dx) > 0.5) orbit(-dx * 0.004);
   if (Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); e.stopImmediatePropagation(); }
 }, { capture: true, passive: false });
 let downX = 0, downY = 0;
-cv.addEventListener("pointerdown", e => {
+function beginAt(e) {
   downX = e.clientX; downY = e.clientY;
   if (e.button !== 0 || tool === "cam") return;
   const i = cellAt(e); if (i < 0) return;
   if (RECT_TOOLS.has(tool)) { rectStart = rectEnd = i; showRect(); return; }
   painting = tool !== "metro"; lastCell = i; apply(i);
-});
+}
+cv.addEventListener("pointerdown", e => { if (e.pointerType === "touch") touchDown(e); else beginAt(e); });
+
+// ---------- Touch (Handy/Tablet) ----------
+// 1 Finger: malen (bei "Ansehen": drehen/neigen)
+// 2 Finger: zusammen/auseinander = zoomen, drehen = Ansicht drehen, gemeinsam schieben = Karte verschieben
+const touches = new Map();
+let pending = null, gesture = null;
+const touchEv = e => ({ clientX: e.clientX, clientY: e.clientY, button: 0, pointerType: "touch" });
+function cancelPaint() {
+  painting = false;
+  if (rectStart >= 0) { rectStart = rectEnd = -1; hover.scale.set(1, 1, 1); hover.visible = false; }
+}
+function gestureState() {
+  const [a, b] = [...touches.values()];
+  return { mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, d: Math.hypot(b.x - a.x, b.y - a.y), ang: Math.atan2(b.y - a.y, b.x - a.x) };
+}
+function touchDown(e) {
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (touches.size === 1) {
+    downX = e.clientX; downY = e.clientY;
+    if (tool === "cam") return;
+    // kurz warten: kommt ein zweiter Finger, ist es eine Geste und kein Malen
+    const ev = touchEv(e);
+    pending = { ev, timer: setTimeout(() => { if (pending && touches.size === 1) { pending = null; beginAt(ev); } }, 110) };
+  } else if (touches.size === 2) {
+    if (pending) { clearTimeout(pending.timer); pending = null; }
+    cancelPaint();
+    gesture = gestureState();
+  }
+}
+function touchMove(e) {
+  if (!touches.has(e.pointerId)) return false;
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (gesture && touches.size >= 2) {
+    const g = gestureState();
+    // zoomen
+    const off = camera.position.clone().sub(controls.target);
+    if (g.d > 10 && gesture.d > 10) off.setLength(clamp(off.length() * gesture.d / g.d, controls.minDistance, controls.maxDistance));
+    camera.position.copy(controls.target).add(off);
+    // drehen
+    let da = g.ang - gesture.ang;
+    if (da > Math.PI) da -= 2 * Math.PI; if (da < -Math.PI) da += 2 * Math.PI;
+    orbit(da);
+    // verschieben (auf dem Boden)
+    const f = new THREE.Vector3(); camera.getWorldDirection(f); f.y = 0; f.normalize();
+    const r = new THREE.Vector3(-f.z, 0, f.x), k = off.length() * 0.0016;
+    const v = r.multiplyScalar(-(g.mx - gesture.mx) * k).add(f.multiplyScalar((g.my - gesture.my) * k));
+    camera.position.add(v); controls.target.add(v);
+    gesture = g;
+    return true;
+  }
+  if (pending && Math.hypot(e.clientX - pending.ev.clientX, e.clientY - pending.ev.clientY) > 8) {
+    clearTimeout(pending.timer); const ev = pending.ev; pending = null; beginAt(ev);
+  }
+  return false;
+}
+function touchUp(e) {
+  if (!touches.has(e.pointerId)) return;
+  touches.delete(e.pointerId);
+  if (pending) { clearTimeout(pending.timer); const ev = pending.ev; pending = null; beginAt(ev); }   // kurzes Tippen = ein Feld
+  if (touches.size < 2) gesture = null;
+}
+cv.addEventListener("pointerup", touchUp);
+cv.addEventListener("pointercancel", e => { touchUp(e); cancelPaint(); });
+
 cv.addEventListener("pointermove", e => {
+  if (e.pointerType === "touch" && touchMove(e)) return;
+  if (gesture) return;
   const i = cellAt(e);
   if (rectStart >= 0) { if (i >= 0) { rectEnd = i; showRect(); } return; }
   showInfo(i);
@@ -1288,6 +1703,8 @@ addEventListener("keydown", e => {
 });
 addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
 function panKeys(dt) {
+  if (keys.has("t")) tilt(-dt * 1.2);       // T: steiler, Blick von oben
+  if (keys.has("g")) tilt(dt * 1.2);        // G: flacher, Blick von unten
   if (keys.has("q")) orbit(dt * 1.6);
   if (keys.has("e")) orbit(-dt * 1.6);
   // Zoomen mit + / - oder R / F
@@ -1428,6 +1845,12 @@ function drawProfile() {
   g.fillText("Einfamilienhäuser", Math.min(W * dHouse / maxD + 8, W - 210), 46);
   g.fillText("0 m", 4, Hc - 1); g.fillText(maxD * 16 + " m", W - 70, Hc - 1);
 }
+function updateAgentUI() {
+  const h = Math.floor(AG.clock), m = Math.floor((AG.clock - h) * 60);
+  $("agClock").textContent = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+  $("agCars").textContent = fmt(AG.stats.cars); $("agWalk").textContent = fmt(AG.stats.walk); $("agMetro").textContent = fmt(AG.stats.metro);
+  $("agGroupV").textContent = (AG.groupUsed || AG.group) + (AG.groupUsed && AG.groupUsed !== AG.group ? " (Grenze)" : "") + " Menschen";
+}
 function bar(el, v, color) {
   const h = Math.abs(v) * 50;
   el.style.background = color;
@@ -1478,7 +1901,7 @@ addEventListener("resize", () => {
 //  START UND SCHLEIFE
 // =====================================================================
 const TICK = 0.25;            // Monat = 2 s bei 1x
-let acc = 0, ticks = 0, lastBuild = 0, prev = performance.now();
+let acc = 0, ticks = 0, lastBuild = 0, prev = performance.now(), lastAgUI = 0;
 function loop(now) {
   const dt = Math.min(0.1, (now - prev) / 1000); prev = now;
   acc += dt * speed;
@@ -1492,8 +1915,12 @@ function loop(now) {
   }
   if (uiDirty) { updateUI(); if (selected >= 0) { if (S.merge[selected] >= 0 && S.merge[selected] !== selected) selected = S.merge[selected]; showDetail(); } }
   if (dirty && now - lastBuild > 120) { build(); dirty = false; lastBuild = now; }
+  tickAgents(dt * speed);
+  drawAgents();
+  if (uiDirty || ((now / 250) | 0) !== lastAgUI) { lastAgUI = (now / 250) | 0; updateAgentUI(); }
   panKeys(dt);
   controls.update();
+  groundCam();
   renderer.render(scene, camera);
   requestAnimationFrame(loop);
 }
