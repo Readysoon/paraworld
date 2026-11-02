@@ -170,7 +170,7 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
     <input id="tax" type="range" min="0" max="25" step="1" value="10">
   </div>
   <div class="sect">
-    <h2>Menschen <span id="agClock" style="float:right;font-family:var(--font-mono);letter-spacing:0;color:var(--paper)">06:00</span></h2>
+    <h2>Menschen</h2>
     <div class="row"><label for="agOn" style="color:var(--muted)"><input type="checkbox" id="agOn" checked> zeigen</label>
     <label for="agGroup" style="color:var(--muted)">1 Punkt = <b id="agGroupV" style="color:var(--paper);font-family:var(--font-mono)">2</b></label></div>
     <input id="agGroup" type="range" min="0" max="5" step="1" value="1" style="max-width:none;width:100%" aria-label="Wie viele Menschen ein Punkt darstellt">
@@ -1109,7 +1109,6 @@ const isPhone = matchMedia("(pointer: coarse)").matches || innerWidth < 760;
 const AG = {
   on: true,
   group: isPhone ? 10 : 2,       // 1 Punkt = so viele Menschen
-  clock: 6.0,                    // Uhrzeit 0..24
   list: [],
   fields: new Map(),             // Wegkarten: Zielstrasse -> Abstand jeder Strasse zum Ziel
   nearRoad: new Int32Array(N * N),
@@ -1223,18 +1222,19 @@ function rebuildAgents() {
     const n = Math.floor(carry); carry -= n;
     const [hx, hz] = centerOf(h.i);
     for (let k = 0; k < n; k++) {
-      const a = { home: h.i, dest: -1, kind: 0, legs: null, state: 0, t0: 0, t1: 0, seg: 0, cell: -1, nxt: -1, p: 0, mode: 0, under: 0, salt: (list.length * 7) & 3 };
+      // Kein Tagesablauf: jeder pendelt staendig zwischen Wohnung und Ziel,
+      // mit eigener Aufenthaltsdauer -> immer gleich viel Verkehr
+      const a = { home: h.i, dest: -1, kind: 0, legs: null, state: 0, stay: 0, homeStay: 0, wait: 0, seg: 0, cell: -1, nxt: -1, p: 0, mode: 0, under: 0, salt: (list.length * 7) & 3 };
       const r = rnd();
-      if (r < 0.5 && jobs.length) {            // Berufstaetige
-        a.kind = 1; a.dest = pickWeighted(jobs, hx, hz, rnd);
-        a.t0 = 6.3 + rnd() * 2.7; a.t1 = 15.5 + rnd() * 3.2;
+      if (r < 0.5 && jobs.length) {            // Arbeit
+        a.kind = 1; a.dest = pickWeighted(jobs, hx, hz, rnd); a.stay = 1.5 + rnd() * 2.5;
       } else if (r < 0.75 && shops.length) {   // Einkaufen
-        a.kind = 2; a.dest = pickWeighted(shops, hx, hz, rnd);
-        a.t0 = 9 + rnd() * 9; a.t1 = a.t0 + 0.6 + rnd() * 1.2;
+        a.kind = 2; a.dest = pickWeighted(shops, hx, hz, rnd); a.stay = 0.3 + rnd() * 0.9;
       } else if (r < 0.9 && parks.length) {    // Park
-        a.kind = 3; a.dest = pickWeighted(parks, hx, hz, rnd);
-        a.t0 = 10 + rnd() * 7; a.t1 = a.t0 + 1 + rnd() * 2;
+        a.kind = 3; a.dest = pickWeighted(parks, hx, hz, rnd); a.stay = 0.5 + rnd() * 1.5;
       } else continue;                         // bleibt zu Hause
+      a.homeStay = 1 + rnd() * 4;
+      a.wait = rnd() * a.homeStay;             // zufaellig versetzt starten
       if (a.dest < 0) continue;
       list.push(a);
     }
@@ -1265,35 +1265,35 @@ function startLeg(a) {
 }
 
 const dayHours = dt => dt * 24 / DAY_SECONDS;
+function arrive(a) {
+  if (a.state === 1) { a.state = 2; a.wait = a.stay; }
+  else { a.state = 0; a.wait = a.homeStay; }
+}
 function tickAgents(dtReal) {
   if (!AG.on) return;
-  const before = AG.clock;
-  AG.clock += dayHours(dtReal);
-  if (AG.clock >= 24) AG.clock -= 24;
-  const wrapped = AG.clock < before;
-  // nachts um 3 Uhr: Menschen neu verteilen (neue Haeuser, neue Jobs)
-  if (AG.needRebuild || (before < 3 && AG.clock >= 3)) rebuildAgents();
-  if (wrapped) for (const a of AG.list) a.state = 0;
-  const h = AG.clock, dh = dayHours(dtReal);
+  const dh = dayHours(dtReal);
+  // regelmaessig neu verteilen (neue Haeuser, neue Jobs); Pendler sind zeitlich versetzt,
+  // daher faellt das kaum auf
+  AG.sinceRebuild = (AG.sinceRebuild || 0) + dh;
+  if (AG.needRebuild || AG.sinceRebuild > 36) { AG.sinceRebuild = 0; rebuildAgents(); }
   AG.carsOn.fill(0);
   for (const a of AG.list) if (a.state === 1 || a.state === 3) if (a.mode === 2 && a.cell >= 0) AG.carsOn[a.cell]++;
   let cars = 0, walk = 0, metro = 0;
   for (const a of AG.list) {
-    // losgehen
-    if (a.state === 0 && h >= a.t0 && h < a.t0 + 3) {
-      a.legs = planTrip(a, a.home, a.dest); a.seg = 0;
-      if (!a.legs) { a.state = 4; continue; }
-      a.state = 1; startLeg(a);
-    } else if (a.state === 2 && h >= a.t1) {
-      a.legs = planTrip(a, a.dest, a.home); a.seg = 0;
-      if (!a.legs) { a.state = 4; continue; }
-      a.state = 3; startLeg(a);
+    // losgehen, wenn die Aufenthaltszeit vorbei ist
+    if (a.state === 0 || a.state === 2) {
+      a.wait -= dh;
+      if (a.wait > 0) continue;
+      const out = a.state === 0;
+      a.legs = out ? planTrip(a, a.home, a.dest) : planTrip(a, a.dest, a.home); a.seg = 0;
+      if (!a.legs) { a.state = 4; continue; }          // kein Weg: bleibt
+      a.state = out ? 1 : 3; startLeg(a);
     }
     if (a.state !== 1 && a.state !== 3) continue;
     // unterwegs
     if (a.mode === 3) {
       a.under -= dh; metro++;
-      if (a.under <= 0) { a.seg++; if (a.seg >= a.legs.length) { a.state = a.state === 1 ? 2 : 4; } else startLeg(a); }
+      if (a.under <= 0) { a.seg++; if (a.seg >= a.legs.length) arrive(a); else startLeg(a); }
       continue;
     }
     let v = a.mode === 2 ? SPEED.car : SPEED.walk;
@@ -1313,7 +1313,7 @@ function tickAgents(dtReal) {
     }
     if (a.nxt < 0) {                          // Etappe geschafft
       a.seg++;
-      if (a.seg >= a.legs.length) a.state = a.state === 1 ? 2 : 4;
+      if (a.seg >= a.legs.length) arrive(a);
       else startLeg(a);
     }
   }
@@ -1846,8 +1846,6 @@ function drawProfile() {
   g.fillText("0 m", 4, Hc - 1); g.fillText(maxD * 16 + " m", W - 70, Hc - 1);
 }
 function updateAgentUI() {
-  const h = Math.floor(AG.clock), m = Math.floor((AG.clock - h) * 60);
-  $("agClock").textContent = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
   $("agCars").textContent = fmt(AG.stats.cars); $("agWalk").textContent = fmt(AG.stats.walk); $("agMetro").textContent = fmt(AG.stats.metro);
   $("agGroupV").textContent = (AG.groupUsed || AG.group) + (AG.groupUsed && AG.groupUsed !== AG.group ? " (Grenze)" : "") + " Menschen";
 }
