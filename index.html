@@ -60,6 +60,11 @@ body { background: #dcd8cf; color: var(--paper); font-family: var(--font-body); 
 #advice.ok { border-left-color: var(--good); }
 #advice.bad { border-left-color: var(--bad); }
 
+/* oben Mitte: Welt-Auswahl */
+#worldbar { position: fixed; top: 12px; left: 0; right: 0; margin: 0 auto; width: fit-content; padding: 6px 8px 6px 12px; display: flex; gap: 8px; align-items: center; }
+#worldbar label { font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+#worldbar select { appearance: none; background: var(--ink-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23a7adb5'/%3E%3C/svg%3E") no-repeat right 10px center; color: var(--paper); border: 1px solid var(--line); border-radius: 7px; padding: 6px 30px 6px 10px; font: 600 15px var(--font-body); cursor: pointer; }
+#worldbar select:focus-visible { outline: 2px solid var(--zone-o); outline-offset: 2px; }
 /* oben rechts: Bedarf wie in Cities: Skylines */
 #demand { position: fixed; top: 12px; right: 12px; padding: 10px 12px 8px; display: grid; gap: 6px; }
 #demand h2 { font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0; text-align: center; }
@@ -112,6 +117,7 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
 @media (max-width: 1600px) { #help { display: none; } }
 @media (max-width: 1500px) { #info { display: none; } }
 @media (max-width: 760px) {
+  #worldbar { top: auto; bottom: 150px; left: auto; right: 12px; margin: 0; }
   #detail { top: auto; bottom: 150px; right: 12px; left: 12px; width: auto; max-height: 40%; }
   #stats { width: 220px; padding: 10px; font-size: 12px; }
   #stats h1 { font-size: 21px; }
@@ -201,6 +207,14 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
   </div>
   </div>
 </section>
+
+<div id="worldbar" class="panel">
+  <label for="world">Welt</label>
+  <select id="world" aria-label="Welt wechseln">
+    <option value="spiral">Spiralstadt</option>
+    <option value="mini">Miniverse</option>
+  </select>
+</div>
 
 <section id="demand" class="panel" aria-label="Bedarf">
   <h2>Bedarf</h2>
@@ -316,6 +330,7 @@ const S = {
   mergeOn: true, mergeAt: 12, steep: 2.5, seed: 1, mixAt: 15, extreme: 1, order: 1,
   parkWater: 0.35, parkPaths: 0.55, parkTrees: 0.6,     // Park-Parameter (fuer alle Parks)
   parkBoost: new Float32Array(N * N),
+  lv: new Float32Array(N * N), lvReady: false,   // Bodenwert, entsteht organisch
   dem: { 2: 0.4, 3: 0, 4: 0, 5: 0.1 },
   st: {}, budget: {}, lastDelta: 0,
 };
@@ -382,9 +397,80 @@ function shapeFactor(x, z) {
   return Math.max(0.45, 1 + lobes + 0.18 * vnoise(x, z));
 }
 function landValue(i) {
+  if (!S.lvReady) computeLandValue(true);
+  if (!isAnchor(i)) return S.lv[i];
   const [cx, cz] = centerOf(i);
-  const lv = lvAt(Math.hypot(cx - S.cx, cz - S.cz) * shapeFactor(cx, cz));
-  return Math.min(1, lv * (1 + S.parkBoost[i]));     // Parks in der Naehe heben den Bodenwert
+  return S.lv[idx(Math.min(N - 1, Math.floor(cx)), Math.min(N - 1, Math.floor(cz)))];
+}
+// ---------- Organischer Bodenwert ----------
+// Wert = Erreichbarkeit (wie viel Leben in der Naehe ist) + hohe Nachbarn
+//        + Boni (Park, U-Bahn, Allee) - Abzuege (Industrie-Abgase, Stau).
+// Hohe Haeuser erzeugen viel Leben -> Nachbarn werden wertvoller -> es bildet sich von selbst eine Mitte.
+let SIG = 0.5;
+const gTmp = new Float32Array(N * N), actB = new Float32Array(N * N), actA = new Float32Array(N * N), nbA = new Float32Array(N * N), lvT = new Float32Array(N * N);
+function gblur(src, out, sigma) {
+  const r = Math.min(N - 1, Math.ceil(sigma * 2.5)), w = new Float32Array(r + 1);
+  for (let k = 0; k <= r; k++) w[k] = Math.exp(-k * k / (2 * sigma * sigma));
+  for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+    let v = 0; const x0 = Math.max(0, x - r), x1 = Math.min(N - 1, x + r);
+    for (let xx = x0; xx <= x1; xx++) v += src[z * N + xx] * w[Math.abs(xx - x)];
+    gTmp[z * N + x] = v;
+  }
+  for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+    let v = 0; const z0 = Math.max(0, z - r), z1 = Math.min(N - 1, z + r);
+    for (let zz = z0; zz <= z1; zz++) v += gTmp[zz * N + x] * w[Math.abs(zz - z)];
+    out[z * N + x] = v;
+  }
+}
+function computeLandValue(instant = false) {
+  if (!S.lvReady) { S.lvReady = true; instant = true; computeParkBoost(); }
+  const act = new Float32Array(N * N), hgt = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++) {
+    const t = S.type[i];
+    if (t === T.ROAD) { act[i] = S.lvl[i] === 2 ? 0.12 : 0.05; continue; }
+    if (t === T.METRO) { act[i] = 2; continue; }
+    if (!isZone(t) || isPart(i) || S.lvl[i] === 0) continue;
+    const u = useOf(i), cells = isAnchor(i) ? cellsOf(i) : [i];
+    const a = (u.jobsC + u.jobsO + u.res * 0.5 + u.shop * 0.3) / cells.length, h = S.lvl[i] * areaOf(i) / cells.length;
+    for (const j of cells) { act[j] = Math.sqrt(a); hgt[j] = Math.sqrt(h); }   // Wurzel: Riesentuerme ueberstrahlen nicht alles
+  }
+  // zwei Reichweiten (nah + weit) ergeben zusammen eine spitze e-Kurve statt eines flachen Plateaus
+  gblur(act, actA, Math.max(3, lambda() * SIG));
+  gblur(act, actB, Math.max(1.5, lambda() * 0.25));
+  let mA = 1e-6, mB = 1e-6;
+  for (let i = 0; i < N * N; i++) { if (actA[i] > mA) mA = actA[i]; if (actB[i] > mB) mB = actB[i]; }
+  for (let i = 0; i < N * N; i++) actA[i] = 0.75 * actA[i] / mA + 0.25 * actB[i] / mB;
+  gblur(hgt, nbA, 1.6);
+  let maxA = 1e-6, maxN = 1e-6;
+  for (let i = 0; i < N * N; i++) { if (actA[i] > maxA) maxA = actA[i]; if (nbA[i] > maxN) maxN = nbA[i]; }
+  // U-Bahn und Allee
+  const bonus = new Float32Array(N * N);
+  for (let m = 0; m < N * N; m++) {
+    const t = S.type[m];
+    if (t !== T.METRO && !(t === T.ROAD && S.lvl[m] === 2)) continue;
+    const mx = m % N, mz = (m / N) | 0, R = t === T.METRO ? METRO_R : 1, B = t === T.METRO ? 0.18 : 0.05;
+    for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+      if (!inside(mx + dx, mz + dz)) continue;
+      const j = idx(mx + dx, mz + dz), v = B * (1 - Math.max(Math.abs(dx), Math.abs(dz)) / (R + 1));
+      if (v > bonus[j]) bonus[j] = v;
+    }
+  }
+  const k = instant ? 1 : 0.08;
+  for (let i = 0; i < N * N; i++) {
+    const x = i % N + 0.5, z = ((i / N) | 0) + 0.5;
+    const acc = actA[i] / maxA, nb = nbA[i] / maxN, pb = S.parkBoost[i];
+    let v = (0.8 * acc + 0.2 * nb) * (1 + 0.15 * vnoise(x, z)) * (1 + pb) + 0.12 * pb + bonus[i]
+      - 0.35 * S.poll[i] - 0.12 * clamp((S.cong[i] || 0) - 1, 0, 1);
+    lvT[i] = Math.max(0, v);
+  }
+  // wertvollstes Baufeld = 100 %
+  let top = 0;
+  for (let i = 0; i < N * N; i++) if (isZone(S.type[i]) && S.roadDist[i] <= ZONE_DEPTH && lvT[i] > top) top = lvT[i];
+  top = Math.max(top, 0.3);
+  for (let i = 0; i < N * N; i++) {
+    const v = Math.min(1, lvT[i] / top);
+    S.lv[i] += (v - S.lv[i]) * k;       // langsam nachziehen, damit nichts flackert
+  }
 }
 // Teiche: weiches Rauschen, nur wo alle Nachbarn auch Park sind (nie am Rand)
 function isParkWater(x, z) {
@@ -400,23 +486,51 @@ function isParkWater(x, z) {
 }
 // Wegknoten pro Park-Feld: Mitte leicht verschoben
 const parkNode = (x, z) => [x + 0.5 + (hash(idx(x, z), 33) - 0.5) * 0.5, z + 0.5 + (hash(idx(x, z), 34) - 0.5) * 0.5];
-// Parks: bis 4 Felder Umkreis +5 % ... +30 % Bodenwert
+// Parks: je groesser ein zusammenhaengender Park, desto staerker und weiter hebt er den Bodenwert
+// 1 Feld: +15 % in 3 Feldern Umkreis, 9: +33 % / 6, 64: +48 % / 9, 400: +63 % / 10
+const parkSize = new Int32Array(N * N);
+// logarithmisch: jedes weitere Parkfeld bringt etwas weniger als das vorige
+const parkB = size => Math.min(0.8, 0.15 + 0.08 * Math.log(size));
+const parkR = size => Math.min(10, 3 + Math.round(1.4 * Math.log(size)));
 function computeParkBoost() {
-  const b = S.parkBoost; b.fill(0);
-  for (let i = 0; i < N * N; i++) {
-    if (S.type[i] !== T.PARK) continue;
-    const x = i % N, z = (i / N) | 0;
-    for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
-      if (!inside(x + dx, z + dz)) continue;
-      const j = idx(x + dx, z + dz);
-      b[j] = Math.min(0.3, b[j] + 0.04 / (1 + Math.max(Math.abs(dx), Math.abs(dz))));
+  const b = S.parkBoost; b.fill(0); parkSize.fill(0);
+  const comp = new Int32Array(N * N).fill(-1), dist = new Int16Array(N * N);
+  for (let s0 = 0; s0 < N * N; s0++) {
+    if (S.type[s0] !== T.PARK || comp[s0] >= 0) continue;
+    // zusammenhaengende Parkflaeche finden
+    const cells = [s0]; comp[s0] = s0;
+    for (let q = 0; q < cells.length; q++) {
+      const c = cells[q], x = c % N, z = (c / N) | 0;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, nz = z + dz;
+        if (!inside(nx, nz)) continue;
+        const j = idx(nx, nz);
+        if (S.type[j] === T.PARK && comp[j] < 0) { comp[j] = s0; cells.push(j); }
+      }
+    }
+    const size = cells.length, maxB = parkB(size), R = parkR(size);
+    for (const c of cells) parkSize[c] = size;
+    // Abstand zum Park (in Feldern) und Bonus nach aussen abnehmend
+    dist.fill(-1); const fr = [...cells]; for (const c of cells) dist[c] = 0;
+    for (let q = 0; q < fr.length; q++) {
+      const c = fr[q], d = dist[c], v = maxB * (1 - d / (R + 1));
+      if (v > b[c]) b[c] = v;
+      if (d >= R) continue;
+      const x = c % N, z = (c / N) | 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, nz = z + dz;
+        if (!inside(nx, nz)) continue;
+        const j = idx(nx, nz);
+        if (dist[j] < 0) { dist[j] = d + 1; fr.push(j); }
+      }
     }
   }
 }
 function heightLimit() {
   // Extrem: bis 200 Stockwerke (wie Blender: Stockwerke Mitte 201)
   const p = clamp((S.st.pop || 0) / 3500, 0, 1);
-  return Math.round(3 + (67 + 133 * S.extreme) * Math.pow(p, 0.6) * clamp(S.st.econ || 0, 0, 1));
+  const worldScale = WORLD === "mini" ? 0.28 : 1;
+  return Math.round(3 + (67 + 133 * S.extreme) * worldScale * Math.pow(p, 0.6) * clamp(S.st.econ || 0, 0, 1));
 }
 // Mindesthoehe im Hochhaus-Bereich (Blender: Stockwerke Rand 14)
 const towerBase = H => Math.min(Math.round(4 + 10 * S.extreme), H);
@@ -442,6 +556,8 @@ function capSingle(i, t) {
 function capFor(i) {
   const t = S.type[i];
   // Extrem: im Kern bleiben verschmolzene Tuerme so hoch wie eine Spitze (breit UND hoch)
+  // Miniverse (jede Extrem-Einstellung): verschmolzene Haeuser werden hoeher als die Grenze und breiter
+  if (isAnchor(i) && WORLD === "mini") return Math.round(capSingle(i, t) * (1 + 0.45 * (Math.sqrt(S.mw[i] * S.mh[i]) - 1)));
   if (isAnchor(i) && S.extreme > 0.5 && isCore(i)) return capSingle(i, t);
   if (isAnchor(i)) return Math.max(1, Math.round(S.mw[i] * S.mh[i] * capSingle(i, t) / AFwh(S.mw[i], S.mh[i])));
   return capSingle(i, t);
@@ -580,7 +696,12 @@ function updateCenter() {
     for (let i = 0; i < N * N; i++) if (S.type[i] === T.ROAD) { tx += (i % N) + 0.5; tz += ((i / N) | 0) + 0.5; n++; }
     if (n) { tx /= n; tz /= n; } else { tx = tz = N / 2; }
   }
-  S.cx += (tx - S.cx) * 0.01; S.cz += (tz - S.cz) * 0.01;
+  if (S.lvReady) {
+    let w = 0, ax = 0, az = 0;
+    for (let i = 0; i < N * N; i++) if (S.lv[i] > 0.85) { const q = S.lv[i] - 0.85; w += q; ax += (i % N + 0.5) * q; az += (((i / N) | 0) + 0.5) * q; }
+    if (w > 0) { tx = ax / w; tz = az / w; }
+  }
+  S.cx += (tx - S.cx) * 0.03; S.cz += (tz - S.cz) * 0.03;
 }
 
 function updateDemand() {
@@ -611,8 +732,11 @@ function setBuilding(a, w, h, totalArea) {
   S.mw[a] = w; S.mh[a] = h;
   S.lvl[a] = Math.max(1, Math.round(totalArea / AFwh(w, h)));   // Flaeche bleibt gleich
 }
+// Miniverse: ein Haus darf verschmelzen, sobald es seine Hoechsthoehe erreicht hat
+const atMax = i => { const c = capFor(i); return c >= 4 && S.lvl[i] >= c; };
 function tryMerge(rnd) {
-  if (!S.mergeOn || S.order >= 0.5) return false;   // Ordnung: schlanke Einzeltuerme wie in Blender
+  const MINI = WORLD === "mini";
+  if (!S.mergeOn) return false;   // Ordnung: schlanke Einzeltuerme wie in Blender
   let changed = false;
   // 1) vier Einzeltuerme (2 x 2) -> ein Gebaeude
   for (let z = 0; z < N - 1; z++) for (let x = 0; x < N - 1; x++) {
@@ -620,10 +744,11 @@ function tryMerge(rnd) {
     if (!isZone(t)) continue;
     let ok = true, sum = 0;
     for (const j of cells) {
-      if (S.type[j] !== t || S.merge[j] >= 0 || S.lvl[j] < S.mergeAt || S.roadDist[j] > ZONE_DEPTH || isSmallHouse(j) || (landValue(j) > CORE_LV && S.extreme <= 0.5)) { ok = false; break; }
+      if (S.type[j] !== t || S.merge[j] >= 0 || S.roadDist[j] > ZONE_DEPTH || isSmallHouse(j)) { ok = false; break; }
+      if (MINI ? !atMax(j) : S.lvl[j] < S.mergeAt) { ok = false; break; }
       sum += S.lvl[j];
     }
-    if (!ok || rnd() > 0.06) continue;
+    if (!ok || rnd() > 0.01 + 0.09 * landValue(a)) continue;   // je wertvoller, desto eher
     setBuilding(a, 2, 2, sum);
     changed = true;
   }
@@ -632,15 +757,15 @@ function tryMerge(rnd) {
   for (let a = 0; a < N * N; a++) {
     if (!isAnchor(a) || S.lvl[a] === 0) continue;
     const t = S.type[a], x = a % N, z = (a / N) | 0, w = S.mw[a], h = S.mh[a];
-    if (singleEq(a) < S.mergeAt || (landValue(a) > CORE_LV && S.extreme <= 0.5)) continue;
+    if (MINI ? !atMax(a) : singleEq(a) < S.mergeAt) continue;
     for (const [nx, nz, horiz] of [[x + w, z, true], [x, z + h, false]]) {
       if (!inside(nx, nz)) continue;
       const b = S.merge[idx(nx, nz)];
-      if (b < 0 || b !== idx(nx, nz) || S.type[b] !== t || S.lvl[b] === 0 || singleEq(b) < S.mergeAt) continue;
+      if (b < 0 || b !== idx(nx, nz) || S.type[b] !== t || S.lvl[b] === 0 || (MINI ? !atMax(b) : singleEq(b) < S.mergeAt)) continue;
       const nw = horiz ? w + S.mw[b] : w, nh = horiz ? h : h + S.mh[b];
       if (horiz ? S.mh[b] !== h : S.mw[b] !== w) continue;     // Kanten muessen gleich lang sein
       if (nw > MAX_MERGE || nh > MAX_MERGE || Math.max(nw, nh) > 3 * Math.min(nw, nh)) continue;
-      if (rnd() > 0.04) continue;
+      if (rnd() > 0.005 + 0.06 * landValue(a)) continue;
       const total = S.lvl[a] * areaOf(a) + S.lvl[b] * areaOf(b);
       demolishMerged(b);
       setBuilding(a, nw, nh, total);
@@ -658,6 +783,7 @@ function growthTick(rnd = Math.random) {
   computePollution();
   computeTraffic();
   computeParkBoost();
+  computeLandValue();
   const E = S.st.econ;
   worstJamCached = worstJam()[1];
   let changed = false;
@@ -671,7 +797,9 @@ function growthTick(rnd = Math.random) {
     // Ordnung: Tuerme mit Mischnutzung wachsen mit dem staerksten Bedarf von Wohnen/Gewerbe/IT
     const demMix = Math.max(S.dem[T.R], S.dem[T.C], S.dem[T.O]);
     const dem = t === T.I || isSmallHouse(i) ? S.dem[t] : S.dem[t] * (1 - S.order) + demMix * S.order;
-    const cap = capFor(i), lv = landValue(i), tf = tfLocal * (1 - S.order) + tfCity * S.order;
+    // Stau in der Innenstadt bremst die Tuerme, aber nicht neue Haeuser dort, wo die Strassen frei sind
+    const tfMix = tfLocal * (1 - S.order) + tfCity * S.order;
+    const cap = capFor(i), lv = landValue(i), tf = L === 0 || isSmallHouse(i) ? tfLocal : Math.max(tfMix, 0.5 * tfLocal);
     if (L < cap && dem > 0 && S.money >= 0) {
       let p = dem * (0.03 + 0.4 * lv) * (0.3 + E) * 1.3;
       if (t !== T.R || !isSmallHouse(i)) p *= 0.7 + 0.6 * (capFor(i) - L) / Math.max(cap, 1);   // weit unter Ziel = schneller
@@ -752,9 +880,10 @@ function zoneRect(t, x0, z0, x1, z1) {
   }
 }
 function newCity() {
-  S.type.fill(0); S.lvl.fill(0); S.merge.fill(-1); S.mw.fill(1); S.mh.fill(1);
+  S.type.fill(0); S.lvl.fill(0); S.merge.fill(-1); S.mw.fill(1); S.mh.fill(1); S.lvReady = false;
   S.cx = N / 2; S.cz = N / 2; S.seed = 1 + Math.floor(Math.random() * 9999);
   S.money = 30000; S.month = 0; S.tax = 0.10; S.st = {}; S.steep = S.steep || 2.5;
+  if (typeof WORLD !== "undefined" && WORLD === "mini") { S.extreme = 0; }
   S.dem = { 2: 0.4, 3: 0, 4: 0, 5: 0.1 };
   const o = OFF;
   for (const v of [16, 21, 26, 31, 36, 41]) { road(v + o, 16 + o, v + o, 41 + o); road(16 + o, v + o, 41 + o, v + o); }
@@ -780,6 +909,7 @@ function serialize() {
 function load(o) {
   if (!o || o.v !== 4 || !o.type || o.type.length !== N * N) return false;
   S.type.set(o.type); S.lvl.set(o.lvl); S.merge.set(o.merge); S.mw.set(o.mw); S.mh.set(o.mh); S.cx = o.cx; S.cz = o.cz;
+  S.lvReady = false;
   S.money = o.money; S.month = o.month; S.tax = o.tax; S.dem = o.dem;
   S.mergeOn = o.mergeOn !== false; S.mergeAt = o.mergeAt || 12; S.steep = o.steep || 2.5; S.seed = o.seed || 1;
   S.mixAt = o.mixAt || 15; S.extreme = o.extreme != null ? o.extreme : 1; S.order = o.order != null ? o.order : 1;
@@ -787,7 +917,11 @@ function load(o) {
   computeRoadDist(); computeParkBoost(); computeStats(); computeTraffic();
   return true;
 }
-function save() { try { localStorage.setItem("spiralstadt4", JSON.stringify(serialize())); } catch (e) {} }
+// Zwei Welten mit gleicher Mechanik, eigener Stadt und eigenem Aussehen
+let WORLD = "spiral";
+try { WORLD = localStorage.getItem("pw-world") === "mini" ? "mini" : "spiral"; } catch (e) {}
+const saveKey = () => WORLD === "mini" ? "miniverse1" : "spiralstadt4";
+function save() { try { localStorage.setItem(saveKey(), JSON.stringify(serialize())); } catch (e) {} }
 
 // =====================================================================
 //  GRAFIK
@@ -852,14 +986,23 @@ const SHAPES = [
   { n: 6, rot: 0, sx: 1.0, sz: 1.0 },
   { n: 40, rot: 0, sx: 0.82, sz: 1.04 },
   { n: 40, rot: 0, sx: 1.0, sz: 1.0 },       // Kreis (Ordnung)
+  { n: 8, rot: Math.PI / 8, sx: 1.0, sz: 1.0 },   // Achteck (Ordnung)
 ];
-const TRI = 0, CIRCLE = 5;
+const TRI = 0, CIRCLE = 5, OCT = 6;
+// Ordnung mit Abwechslung: jeder Block (zwischen den Strassen) hat einen eigenen Stil
+const BLOCK_STYLES = [
+  { shape: CIRCLE, twist: -0.0175, inset: 0.9,  podium: false, tint: 0x7f9fb9 },
+  { shape: OCT,    twist: -0.0175, inset: 0.86, podium: true,  tint: 0x86a39e },
+  { shape: 4,      twist: -0.01,   inset: 0.93, podium: false, tint: 0x9b9ca3 },
+  { shape: 3,      twist: -0.03,   inset: 0.88, podium: true,  tint: 0x6f8fb0 },
+];
 const CAP_FLOORS = 30000;
 const slabM = SHAPES.map(s => makeInst(new THREE.CylinderGeometry(1, 1, 1, s.n), s.n > 10 ? matSolid : matFlat, CAP_FLOORS));
 const glassM = SHAPES.map(s => makeInst(new THREE.CylinderGeometry(1, 1, 1, s.n), s.n > 10 ? matGlassSmooth : matGlass, CAP_FLOORS));
 const box = new THREE.BoxGeometry(1, 1, 1);
 const houseSlabM = makeInst(box, matSolid, 12000);
 const houseGlassM = makeInst(box, matGlass, 12000);
+const accentM = makeInst(box, matSolid, 20000);   // Holz, Anthrazit, Solarpaneele, Innenhof
 const poolM = makeInst(box, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1 }), N * N, false);
 const concM = makeInst(box, matConcrete, 40000);           // Sichtbeton (Industrie)
 const slitM = makeInst(box, matGlass, 20000);               // Fensterschlitze
@@ -888,6 +1031,49 @@ scene.add(centerG);
 const selBox = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
   new THREE.LineBasicMaterial({ color: 0xffd257 }));
 selBox.visible = false; scene.add(selBox);
+// ---------- Miniverse: Terrassenstadt ----------
+const matWater = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.05, transparent: true, opacity: 0.7, emissive: 0x6fb9c9, emissiveIntensity: 0.35, depthWrite: false });
+const mBoxM = makeInst(box, matSolid, 140000);                 // Platten, Steinwaende, Kerne
+const mGlassM = makeInst(box, matGlass, 90000);                // Fenster
+const mBushM = makeInst(new THREE.IcosahedronGeometry(1, 1), matFlat, 90000);   // Bueschel, Palmwedel
+const mFallM = makeInst(box, matWater, 4000, false);           // Wasserfaelle
+const mMastM = makeInst(new THREE.CylinderGeometry(1, 1, 1, 8), matSolid, N * N);
+const mBallM = makeInst(new THREE.IcosahedronGeometry(1, 2), new THREE.MeshBasicMaterial({ color: 0xffffff }), N * N, false);
+const MC = {
+  beton: new THREE.Color(0xeedcb3), kern: new THREE.Color(0xcdbd9e), stein: new THREE.Color(0x7a5e45), glas: new THREE.Color(0x336b73), rahmen: new THREE.Color(0x731f26),
+  gruen: new THREE.Color(0x4d9430), gruen2: new THREE.Color(0x7ab338), stamm: new THREE.Color(0x6b4d2e), gehweg: new THREE.Color(0xe0d6bd), rasen: new THREE.Color(0x66a040),
+  strasse: new THREE.Color(0x616160), mast: new THREE.Color(0x33738c), kugel: new THREE.Color(0x8fe3f2), platz: new THREE.Color(0xd1c2a3),
+};
+// Huegel rundherum und schwebender Glaswuerfel
+const miniEnv = new THREE.Group();
+{
+  const hm = new THREE.MeshStandardMaterial({ color: 0x73a84d, roughness: 1, flatShading: false });
+  const R = N * 0.78 + 6;
+  for (let k = 0; k < 22; k++) {
+    const a = 2 * Math.PI * k / 22 + (hash(k, 301) - 0.5) * 0.2, r = R + hash(k, 302) * 12, g = 6 + hash(k, 303) * 7;
+    const h = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 12), hm);
+    h.scale.set(g * 1.5, g * 0.8, g * 1.2); h.position.set(Math.cos(a) * r, -g * 0.3, Math.sin(a) * r);
+    h.receiveShadow = true; miniEnv.add(h);
+  }
+  const cube = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6),
+    new THREE.MeshStandardMaterial({ color: 0xd9ffcc, roughness: 0.05, transparent: true, opacity: 0.6, emissive: 0xaaf0a0, emissiveIntensity: 0.4 }));
+  cube.position.set(2, 7, 3); cube.rotation.set(0.35, 0.26, 0.52); cube.name = "wuerfel";
+  miniEnv.add(cube);
+}
+miniEnv.visible = false; scene.add(miniEnv);
+
+// Weiche Stilfelder wie im Blender-Skript: der Stil aendert sich langsam ueber die Stadt
+function styleField(name, x, z) {
+  let w = 0;
+  for (let k = 0; k < 3; k++) {
+    const seed = name.charCodeAt(0) * 13 + name.length * 7 + k * 31 + S.seed;
+    const f = (0.6 + hash(seed, 1) * 1.0) / 3.5, dir = hash(seed, 2) * 6.283, p1 = hash(seed, 3) * 6.283, p2 = hash(seed, 4) * 6.283;
+    const u = x * Math.cos(dir) + z * Math.sin(dir), v = -x * Math.sin(dir) + z * Math.cos(dir);
+    w += Math.sin(u * f + p1) * 0.6 + Math.sin(v * f * 0.8 + p2) * 0.4;
+  }
+  return clamp(0.5 + w / 3, 0, 1);
+}
+
 const hover = new THREE.Mesh(new THREE.BoxGeometry(1, 0.06, 1), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, depthWrite: false }));
 hover.visible = false; scene.add(hover);
 
@@ -898,7 +1084,9 @@ const COL = {
   lotGrass: C(0xb9cda6), lotPlaza: C(0xd3cfc6), lotInd: C(0xa29e95),
   slab: { 2: C(0xf7f6f2), 3: C(0xeceae4), 4: C(0xdfe3e7) },
   glass: { 2: C(0x7fa3c2), 3: C(0x5a90c9), 4: C(0x2e4a66) },
-  houseGlass: C(0x6f95b6), glassCalm: C(0x7f9fb9), white: C(0xf7f6f2), pool: C(0x4fb6dd),
+  houseGlass: C(0x6f95b6), glassCalm: C(0x7f9fb9),
+  accents: [C(0x9a6b45), C(0x3b3f45), C(0xcfc3ad)], solar: C(0x1f2a44), court: C(0x9fbf86),
+  tints: BLOCK_STYLES.map(b => C(b.tint)), white: C(0xf7f6f2), pool: C(0x4fb6dd),
   conc: C(0xa7a39b), concDark: C(0x8d8981), concLight: C(0xbab6ad), slit: C(0x33373b),
   metro: C(0xf2f0ea), metroSign: C(0x2f62c9),
   parkGrass: C(0x8fbf6f), water: C(0x4f9fcf), path: C(0xe6dcc4), trunk: C(0x7a6248),
@@ -927,6 +1115,7 @@ const lvColor = v => tmpC.setHSL(0.6 - 0.6 * v, 0.55, 0.62 - 0.12 * v);
 const congColor = c => tmpC.setHSL(clamp(0.33 - 0.33 * (c - 0.4) / 0.9, 0, 0.33), 0.75, 0.5);
 
 function build() {
+  const MINI = WORLD === "mini";
   const cnt = new Map();
   const next = m => { const n = cnt.get(m) || 0; cnt.set(m, n + 1); return n; };
   const half = N / 2;
@@ -934,7 +1123,18 @@ function build() {
     const t = S.type[i], gx = i % N, gz = (i / N) | 0, x = gx + 0.5 - half, z = gz + 0.5 - half;
     if (t === T.ROAD) {
       const ave = S.lvl[i] === 2;
-      put(roadM, next(roadM), x, 0.012, z, 0, 1, 0.024, 1, overlay === "traffic" ? congColor(S.cong[i]) : ave ? COL.ave : COL.road);
+      put(roadM, next(roadM), x, 0.012, z, 0, 1, 0.024, 1, overlay === "traffic" ? congColor(S.cong[i]) : ave ? COL.ave : MINI ? MC.strasse : COL.road);
+      // Miniverse: Laternen mit leuchtenden Glaskugeln am Strassenrand
+      if (MINI && ((gx * 3 + gz * 5) % 4 === 0)) {
+        for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+          const nx = gx + dx, nz = gz + dz;
+          if (!inside(nx, nz) || S.type[idx(nx, nz)] === T.ROAD) continue;
+          const lx = x + dx * 0.45, lz = z + dz * 0.45;
+          put(mMastM, next(mMastM), lx, 0.24, lz, 0, 0.008, 0.47, 0.008, MC.mast);
+          put(mBallM, next(mBallM), lx, 0.49, lz, 0, 0.034, 0.034, 0.034, MC.kugel);
+          break;
+        }
+      }
       if (ave && overlay !== "traffic") {
         const h = (gx > 0 && S.type[i - 1] === T.ROAD) || (gx < N - 1 && S.type[i + 1] === T.ROAD);
         put(markM, next(markM), x, 0.026, z, 0, h ? 0.9 : 0.08, 0.004, h ? 0.08 : 0.9, COL.mark);
@@ -958,13 +1158,26 @@ function build() {
     if (t === T.EMPTY) continue;
     const small = isSmallHouse(i), cap = capFor(i);
     if (!overlay) {
-      const tc = L === 0 ? COL.zone[t] : t === T.I ? COL.lotInd : small ? COL.lotGrass : COL.lotPlaza;
+      const tc = L === 0 ? COL.zone[t] : t === T.I ? COL.lotInd : MINI ? MC.gehweg : small ? COL.lotGrass : COL.lotPlaza;
       put(tileM, next(tileM), bx, 0.01, bz, 0, tileS, 0.02, tileZ, tc);
+      if (MINI && L > 0 && t !== T.I) put(tileM, next(tileM), bx, 0.022, bz, 0, tileS * 0.78, 0.006, tileZ * 0.78, MC.rasen);
     }
     if (L === 0) continue;
     const h1 = hash(i, 1), h2 = hash(i, 2), h3 = hash(i, 3), h4 = hash(i, 4), h5 = hash(i, 5);
     const base = anchor && mw !== mh ? Math.floor(h1 * 2) * Math.PI : Math.floor(h1 * 4) * Math.PI / 2;
 
+    if (MINI && t !== T.I) {
+      // Terrassenhaeuser in allen Groessen (kleine: Steinkern am Rand, hohe: Betonkern in der Mitte)
+      let rdx = 0, rdz = 0;
+      if (small) search0: for (const dist of [1, 2]) for (const [dx, dz] of [[0, 1], [1, 0], [0, -1], [-1, 0]]) {
+        const nx = gx + dx * dist, nz = gz + dz * dist;
+        if (inside(nx, nz) && S.type[idx(nx, nz)] === T.ROAD) { rdx = dx; rdz = dz; break search0; }
+      }
+      const W = small ? 0.55 : anchor ? Math.min(mw, mh) * 0.85 : Math.min(0.95, 0.7 + 0.012 * L);
+      if (!small && (anchor || L >= 7)) buildTerraceBig(next, i, bx, bz, L, mw * 0.5 - 0.1, mh * 0.5 - 0.1);
+      else buildTerrace(next, i, bx, bz, L, W, small, rdx, rdz);
+      continue;
+    }
     if (small) {
       const dir = h2 < 0.5 ? 1 : -1;
       // Vorderseite zur Strasse, Pool hinten im Garten
@@ -975,7 +1188,9 @@ function build() {
       }
       const hb = rdx || rdz ? Math.atan2(-rdx, -rdz) : base;
       const hx = x + rdx * 0.12, hz = z + rdz * 0.12;
-      for (let k = 0; k < L; k++) {
+      const hv = Math.floor(hash(i, 8) * 5);
+      if (hv > 0) buildHouse(next, i, hx, hz, hb, L, hv);
+      else for (let k = 0; k < L; k++) {
         const r = hb + k * 0.22 * dir;
         const ox = k === 0 ? 0 : Math.cos(hb) * 0.1 * k * dir, oz = k === 0 ? 0 : -Math.sin(hb) * 0.1 * k * dir;
         put(houseGlassM, next(houseGlassM), hx + ox, k * FH + FH / 2, hz + oz, r, 0.6, FH - SLAB, 0.46, COL.houseGlass);
@@ -996,28 +1211,277 @@ function build() {
     // gewundener Turm (Wohnen, Gewerbe, IT); zusammengelegt = breiter, weniger Drall
     const ordered = S.order >= 0.5;
     // Ordnung: Nadeln im Kern als gedrehte Dreiecke (wie Shanghai), sonst runde Tuerme
-    const si = ordered ? (isCore(i) ? TRI : CIRCLE)
-      : anchor && mw !== mh ? (h4 < 0.5 ? 1 : 4) : Math.floor(h4 * (SHAPES.length - 1)), sh = SHAPES[si];
+    const core = ordered && isCore(i);
+    const bst = BLOCK_STYLES[Math.floor(hash((((gx / 5) | 0) * 97 + ((gz / 5) | 0) * 31) | 0, 9) * BLOCK_STYLES.length)];
+    const si = ordered ? (core ? TRI : (anchor && mw !== mh ? CIRCLE : bst.shape))
+      : anchor && mw !== mh ? (h4 < 0.5 ? 1 : 4) : Math.floor(h4 * 5), sh = SHAPES[si];
     // sehr hohe Tuerme drehen sich pro Stockwerk weniger (Blender: 1 Grad pro Stockwerk)
     const twistRnd = (h2 < 0.5 ? 1 : -1) * (0.035 + 0.09 * h3) * (anchor ? (mw === mh ? 0.5 : 0) : 1) * Math.min(1, 40 / Math.max(L, 1));
-    const twist = twistRnd * (1 - S.order) + (-0.0175) * S.order;   // Ordnung: alle -1 Grad pro Stockwerk
+    const twist = twistRnd * (1 - S.order) + (core ? -0.0175 : bst.twist) * S.order;   // Ordnung: Drall je Block
     const step = ordered ? 1 : (h5 < 0.3 ? 3 : 1);
-    const taper = (0.25 * hash(i, 6) * (1 - S.order) + 0.12 * S.order) * (1 - S.extreme) + 0.45 * S.extreme;   // Extrem: oben 55 % (Blender: Groesse oben 0.55)
+    const taper = ((0.25 * hash(i, 6) * (1 - S.order) + 0.12 * S.order) * (1 - S.extreme) + 0.45 * S.extreme)   // Extrem: oben 55 % (Blender: Groesse oben 0.55)
+      * (ordered && !core ? 0.6 + 0.8 * hash(i, 14) : 1);
+    const rv = ordered && !core && !anchor ? 0.85 + 0.2 * hash(i, 10) : 1;   // leicht unterschiedliche Breiten
+    const crown = ordered && !core && hash(i, 11) < 0.35 && L >= 8;          // zurueckgesetzte Krone
+    const podium = ordered && !core && bst.podium && L >= 6;                 // breiterer Sockel
     const rot0 = ordered ? 0 : base;
-    const RX = anchor ? halfExt(mw) : (t === T.C ? 0.44 : R1), RZ = anchor ? halfExt(mh) : RX;
+    const RX = (anchor ? halfExt(mw) : (t === T.C ? 0.44 : R1)) * rv, RZ = anchor ? halfExt(mh) : RX;
     const INSET = { 2: anchor ? 0.9 : 0.84, 3: 0.93, 4: 0.95 };
     const sc = ordered ? COL.slab[2] : COL.slab[t], mix = mixOf(i);
     for (let k = 0; k <= L; k++) {
       const r = rot0 + sh.rot + Math.floor(k / step) * step * twist;
-      const f = 1 - taper * k / Math.max(L, 10);
+      let f = 1 - taper * k / Math.max(L, 10);
+      if (crown && k > L * 0.85) f *= 0.74;
+      if (podium && k <= 2) f = Math.min(1.12 / rv, f * 1.18);
       put(slabM[si], next(slabM[si]), bx, k * FH + SLAB / 2, bz, r, f * RX * sh.sx, SLAB, f * RZ * sh.sz, sc);
       if (k < L) {
         // Nutzung dieser Etage: unten Laeden, Mitte Bueros, oben Wohnungen
         const use = mix ? (k < mix.c ? T.C : k < mix.c + mix.o ? T.O : T.R) : t;
-        const inset = ordered ? 0.9 : INSET[use];
-        const gc = ordered ? COL.glassCalm : COL.glass[use];   // Ordnung: ein ruhiges Glas fuer alle
+        const inset = ordered ? (core ? 0.9 : bst.inset) : INSET[use];
+        const gc = ordered ? (core ? COL.glassCalm : COL.tints[BLOCK_STYLES.indexOf(bst)]) : COL.glass[use];   // Ordnung: ruhiges Glas, Ton je Block
         put(glassM[si], next(glassM[si]), bx, k * FH + SLAB + (FH - SLAB) / 2, bz, r, f * RX * sh.sx * inset, FH - SLAB, f * RZ * sh.sz * inset, gc);
       }
+    }
+  }
+
+  // Terrassenhaus wie im Blender-Skript "Terrassenstadt":
+  // Kern (Stein am Rand bei kleinen, Beton in der Mitte bei hohen Haeusern),
+  // je Etage Wohnbox aus Stein+Glas, darueber gedrehte und versetzte Platten mit Gruen.
+  function buildTerrace(next, i, cx, cz, L, W, small, rdx, rdz) {
+    let sd = 1;
+    const R = () => hash(i, 500 + sd++);
+    const RU = (a, b) => a + (b - a) * R();
+    const gx = cx + N / 2, gz = cz + N / 2;
+    const share = Math.min(1, L / Math.max(S.st.hmax || 3, 8));
+    const fk = styleField("kern", gx, gz), dreh = styleField("dreh", gx, gz), wohnF = styleField("wohnung", gx, gz),
+      vers = styleField("versatz", gx, gz), garten = styleField("garten", gx, gz);
+    const k = small ? 0 : clamp(fk * 0.6 + share * 0.5, 0, 1), wohn = Math.max(0, wohnF - share * 0.3);
+    const grund = RU(0, 35) * dreh * Math.PI / 180;
+    const richt = rdx || rdz ? 1 : (R() < 0.5 ? 1 : -1);
+    const kernB = Math.max(0.11, W * (0.14 + 0.14 * k));
+    // Kern: bei kleinen Haeusern am Rand (Richtung Garten), bei hohen in der Mitte
+    const side = R() < 0.5 ? 1 : -1;
+    let kx = cx + (1 - k) * W * 0.3 * side, kz = cz;
+    if (rdx || rdz) { kx = cx + (1 - k) * W * 0.3 * side * Math.abs(rdz) - rdx * (1 - k) * W * 0.15; kz = cz + (1 - k) * W * 0.3 * side * Math.abs(rdx) - rdz * (1 - k) * W * 0.15; }
+    const top = L * FH;
+    const plattenEnde = top * (1 - k * RU(0.15, 0.3)) + 0.001;
+    const breite = y => W * (0.35 + 0.65 * (1 - Math.min(1, y / Math.max(plattenEnde, 0.2))));
+    const brettForm = 0.65 - 0.3 * k;
+    const MAXP = 0.82;                                   // Platten bleiben ungefaehr im Grundstueck
+    let seite = R() < 0.5 ? 1 : -1, y = 0, etage = 0, oberste = null, weiteste = null;
+    const BOX = (m, x, yy, z, sx, sy, sz, rot, col) => put(m, next(m), x, yy + sy / 2, z, rot, sx, sy, sz, col);
+    const busch = (x, yy, z, r) => put(mBushM, next(mBushM), x, yy + r * 0.45, z, R() * 6, r * (1 + RU(-0.2, 0.3)), r * (0.75 + R() * 0.25), r * (1 + RU(-0.2, 0.3)), R() < 0.6 ? MC.gruen : MC.gruen2);
+    const palme = (x, yy, z, h) => {
+      put(trunkM, next(trunkM), x, yy + h / 2, z, 0, 0.012, h, 0.012, MC.stamm);
+      for (let n = 0; n < 6; n++) {
+        const a = 2 * Math.PI * n / 6 + RU(-0.2, 0.2), l = RU(0.06, 0.09);
+        put(mBushM, next(mBushM), x + Math.cos(a) * l * 0.7, yy + h - 0.01, z + Math.sin(a) * l * 0.7, -a, l, 0.008, 0.022, MC.gruen);
+      }
+      put(mBushM, next(mBushM), x, yy + h, z, 0, 0.022, 0.018, 0.022, MC.gruen);
+    };
+    const G = FH * 0.72;                                 // Wohnhoehe, der Rest ist Platte
+    while (y + G < plattenEnde && etage < L) {
+      const b = breite(y);
+      // Wohnbox
+      const anteil = wohn * (1 - 0.6 * k);
+      const wl = Math.max(kernB + 0.09, kernB + 0.09 + (b * 0.8 - kernB - 0.09) * anteil);
+      const wt = Math.max(kernB + 0.06, kernB + 0.06 + (b * 0.55 - kernB - 0.06) * anteil);
+      const wx = kx + (cx - kx) * 0.7, wz = kz + (cz - kz) * 0.7;
+      const ww = grund + dreh * RU(-15, 15) * Math.PI / 180;
+      BOX(mBoxM, wx, y, wz, wl, G, wt, ww, MC.stein);
+      BOX(mGlassM, wx, y + G * 0.24, wz, wl * 0.88, G * 0.62, wt + 0.005, ww, MC.glas);
+      BOX(mGlassM, wx, y + G * 0.24, wz, wl + 0.005, G * 0.62, wt * 0.8, ww, MC.glas);
+      if (etage === 0) BOX(mBoxM, wx + Math.sin(ww) * (wt / 2 + 0.004) * richt, 0, wz + Math.cos(ww) * (wt / 2 + 0.004) * richt, 0.09, G * 0.95, 0.008, ww, MC.rahmen);
+      y += G;
+      // Plattengruppe (1 bis 2 Platten, passt in die Etagenhoehe)
+      const nb = R() < 0.25 + 0.5 * k ? 2 : 1;
+      const slot = FH - G;
+      for (let n = 0; n < nb; n++) {
+        const dicke = slot / nb;
+        let laenge = Math.min(b * RU(0.85, 1.15), MAXP);
+        if (R() < 0.25) laenge = Math.min(laenge * RU(1.1, 1.25), MAXP);
+        let tiefe = Math.max(kernB + 0.04, laenge * brettForm * RU(0.8, 1.15));
+        let wkl = grund + dreh * RU(-14, 14) * Math.PI / 180;
+        if (R() < (1 - dreh) * 0.2) wkl += Math.PI / 2;
+        if (R() < 0.7) seite = -seite;
+        const vEff = 0.25 + 0.75 * Math.max(vers, k);
+        const raus = seite * Math.min(vEff * Math.max(0, laenge / 2 - kernB / 2) * RU(0.5, 1), Math.max(0, 0.52 - laenge / 2));
+        laenge = Math.min(laenge, W * 1.05);
+        const ca0 = Math.abs(Math.cos(wkl)), sa0 = Math.abs(Math.sin(wkl));
+        const LIM = 0.44;
+        let ex = ca0 * laenge / 2 + sa0 * tiefe / 2, ez = sa0 * laenge / 2 + ca0 * tiefe / 2;
+        const sc = Math.min(1, LIM / Math.max(ex, ez));      // passt die Platte nicht ins Grundstueck: kleiner machen
+        laenge *= sc; tiefe *= sc; ex *= sc; ez *= sc;
+        const px = ex >= LIM ? cx : clamp(kx + Math.cos(wkl) * raus + (cx - kx) * (1 - k) * 0.6, cx - LIM + ex, cx + LIM - ex);
+        const pz = ez >= LIM ? cz : clamp(kz - Math.sin(wkl) * raus + (cz - kz) * (1 - k) * 0.6, cz - LIM + ez, cz + LIM - ez);
+        BOX(mBoxM, px, y, pz, laenge, dicke, tiefe, wkl, MC.beton);
+        y += dicke;
+        const aussen = Math.abs(raus) > 0.02 ? Math.sign(raus) : (R() < 0.5 ? 1 : -1);
+        const reich = Math.hypot(px - cx, pz - cz) + laenge / 2;
+        if (!weiteste || reich > weiteste[0]) weiteste = [reich, px, pz, laenge, wkl, y, aussen];
+        oberste = [px, pz, y, laenge, tiefe, wkl, aussen];
+      }
+      // Gruen am freien Plattenende oder als Pflanzkasten
+      const [px, pz, pyy, pl, pt, a, au] = oberste;
+      const ca = Math.cos(a), sa = -Math.sin(a);
+      if (R() < garten * 0.8) {
+        for (const sdd of [-1, 1]) {
+          const ox = -sa * sdd * (pt / 2 - 0.02), oz = ca * sdd * (pt / 2 - 0.02);
+          BOX(mBoxM, px + ox, pyy, pz + oz, pl - 0.02, 0.018, 0.03, a, MC.beton);
+          for (let kk = 0; kk < Math.min(5, Math.floor(pl / 0.1)); kk++) {
+            const d = -pl / 2 + 0.05 + kk * 0.1 + RU(-0.01, 0.01);
+            busch(px + ox + ca * d, pyy + 0.012, pz + oz + sa * d, RU(0.022, 0.034));
+          }
+        }
+      } else {
+        const d = au * pl * 0.38;
+        for (let n = 0, m = 2 + Math.floor(R() * 3); n < m; n++) busch(px + ca * d + RU(-0.04, 0.04), pyy, pz + sa * d + RU(-0.04, 0.04), RU(0.025, 0.047));
+      }
+      if (R() < 0.08 + 0.2 * garten) palme(px + ca * au * pl * RU(0.15, 0.35), pyy, pz + sa * au * pl * RU(0.15, 0.35), RU(0.13, 0.2));
+      etage++;
+    }
+    // Kern ragt bei hohen Haeusern weit ueber die Platten hinaus
+    const kernH = Math.max(y + 0.05, k > 0.3 ? top : y + RU(0.05, 0.12));
+    BOX(mBoxM, kx, 0, kz, kernB, kernH, kernB, grund, R() < k ? MC.kern : MC.stein);
+    if (k > 0.4) {
+      for (let n = 0, m = 1 + Math.floor(R() * 3); n < m; n++) palme(kx + RU(-0.04, 0.04), kernH, kz + RU(-0.04, 0.04), RU(0.11, 0.17));
+      busch(kx, kernH, kz, kernB * 0.35);
+    } else if (oberste) {
+      const [px, pz, pyy, pl] = oberste;
+      for (let n = 0, m = 1 + Math.floor(R() * (2 + 2 * garten)); n < m; n++) palme(px + RU(-pl / 3, pl / 3), pyy, pz + RU(-0.03, 0.03), RU(0.12, 0.22));
+    }
+    // Wasserfall vom am weitesten ausladenden Brett
+    if (weiteste && R() < 0.4) {
+      const [, wpx, wpz, wpl, wa, wy, au] = weiteste;
+      const ex = wpx + Math.cos(wa) * au * (wpl / 2 + 0.006), ez = wpz - Math.sin(wa) * au * (wpl / 2 + 0.006);
+      put(mFallM, next(mFallM), ex, (wy - 0.02) / 2, ez, wa, 0.008, wy - 0.02, 0.09, MC.kugel);
+      put(mBushM, next(mBushM), ex, 0.02, ez, 0, 0.08, 0.04, 0.09, C(0xffffff));
+    }
+  }
+
+  // Grosse Terrassenhaeuser (wie im Beispielbild): schlanker quadratischer Kern,
+  // gerade Platten nur in zwei Richtungen (0 / 90 Grad), wechselnd links/rechts auskragend,
+  // in Gruppen von 2-3 Platten. Keine Platte verlaesst den Grundriss des Grundstuecks.
+  function buildTerraceBig(next, i, cx, cz, L, fx, fz) {
+    let sd = 1;
+    const R = () => hash(i, 700 + sd++);
+    const RU = (a, b) => a + (b - a) * R();
+    const BOX = (m, x, yy, z, sx, sy, sz, col) => put(m, next(m), x, yy + sy / 2, z, 0, sx, sy, sz, col);
+    const gx = cx + N / 2, gz = cz + N / 2, garten = styleField("garten", gx, gz);
+    const busch = (x, yy, z, r) => put(mBushM, next(mBushM), x, yy + r * 0.45, z, R() * 6, r * RU(0.85, 1.2), r * RU(0.7, 0.95), r * RU(0.85, 1.2), R() < 0.6 ? MC.gruen : MC.gruen2);
+    const palme = (x, yy, z, h) => {
+      put(trunkM, next(trunkM), x, yy + h / 2, z, 0, 0.012, h, 0.012, MC.stamm);
+      for (let n = 0; n < 6; n++) {
+        const a = 2 * Math.PI * n / 6 + RU(-0.2, 0.2), l = RU(0.06, 0.09);
+        put(mBushM, next(mBushM), x + Math.cos(a) * l * 0.7, yy + h - 0.01, z + Math.sin(a) * l * 0.7, -a, l, 0.008, 0.022, MC.gruen);
+      }
+    };
+    const top = L * FH;
+    // Kern: schlank, etwa ein Fuenftel der kurzen Grundstuecksseite, nicht dicker als 5 m
+    const kb = clamp(Math.min(fx, fz) * RU(0.38, 0.5), 0.13, 0.3);
+    const kx = cx + RU(-0.12, 0.12) * (fx - kb / 2 - 0.05), kz = cz + RU(-0.12, 0.12) * (fz - kb / 2 - 0.05);
+    const kernH = top + RU(0.15, 0.4) + FH * 2;
+    BOX(mBoxM, kx, 0, kz, kb, kernH, kb, MC.kern);
+    // Schlitzfenster im Kern
+    BOX(mGlassM, kx, FH * 1.5, kz, kb * 0.25, kernH - FH * 2, kb + 0.004, MC.glas);
+    const mainX = fx >= fz;                    // Hauptrichtung = lange Grundstuecksseite
+    let seite = R() < 0.5 ? 1 : -1, y = 0, f = 0;
+    while (f < L) {
+      // Gruppe: 2-3 Etagen mit Wohnbox, darueber 2-3 dicht gestapelte Platten
+      const gruppe = Math.min(L - f, 2 + Math.floor(R() * 2));
+      const wohnB = kb + RU(0.08, 0.18);
+      for (let e = 0; e < gruppe; e++) {
+        const g = FH * 0.75;
+        BOX(mBoxM, kx, y, kz, wohnB, g, wohnB * RU(0.8, 1), MC.stein);
+        BOX(mGlassM, kx, y + g * 0.22, kz, wohnB * 0.86, g * 0.6, wohnB + 0.006, MC.glas);
+        BOX(mGlassM, kx, y + g * 0.22, kz, wohnB + 0.006, g * 0.6, wohnB * 0.7, MC.glas);
+        y += g;
+        const n = R() < 0.25 ? 0 : 1 + (R() < 0.3 ? 1 : 0);
+        const slot = FH - g;
+        if (n === 0) y += slot;
+        for (let k = 0; k < n; k++) {
+          const along = R() < 0.72 ? mainX : !mainX;        // meist entlang der langen Seite
+          const F = along ? fx : fz, Fq = along ? fz : fx;    // Halbmass in Laengs- und Querrichtung
+          const lmax = 2 * F - 0.1;
+          const laenge = Math.min(kb * RU(2.6, 3.8), lmax);
+          const tiefe = Math.min(kb * RU(1.1, 1.5), 2 * Fq - 0.1);
+          if (R() < 0.7) seite = -seite;
+          const kc = along ? kx - cx : kz - cz;               // Kern-Lage in Laengsrichtung
+          // auskragen so weit es geht, aber innerhalb des Grundrisses
+          const want = seite * RU(0.35, 0.7) * (laenge / 2 - kb / 2);
+          const lo = -F + laenge / 2 - kc, hi = F - laenge / 2 - kc;
+          const off = clamp(want, Math.min(lo, hi), Math.max(lo, hi));
+          const q = clamp((along ? kz - cz : kx - cx), -Fq + tiefe / 2, Fq - tiefe / 2) - (along ? kz - cz : kx - cx);
+          const px = along ? kx + off : kx + q, pz = along ? kz + q : kz + off;
+          const sx = along ? laenge : tiefe, sz = along ? tiefe : laenge;
+          const d = slot / n;
+          BOX(mBoxM, px, y, pz, sx, d * 0.8, sz, MC.beton);
+          y += d;
+          // Gruen am freien Ende der Platte
+          const endX = along ? px + Math.sign(off || seite) * (laenge / 2 - 0.05) : px;
+          const endZ = along ? pz : pz + Math.sign(off || seite) * (laenge / 2 - 0.05);
+          if (R() < 0.35 + 0.5 * garten) {
+            const m = 1 + Math.floor(R() * 3);
+            for (let b = 0; b < m; b++) busch(endX + (along ? -b * 0.05 * Math.sign(off || 1) : RU(-0.03, 0.03)), y, endZ + (along ? RU(-0.03, 0.03) : -b * 0.05 * Math.sign(off || 1)), RU(0.02, 0.035));
+          }
+          if (R() < 0.06 + 0.12 * garten) palme(endX, y, endZ, RU(0.12, 0.2));
+        }
+        f++;
+        if (f >= L) break;
+      }
+      y += FH * 0.15;                        // kleine Luecke zwischen Gruppen wie im Bild
+    }
+    // Dachgarten auf dem Kern
+    const kt = Math.max(kernH, y + 0.05);
+    if (kt > kernH) BOX(mBoxM, kx, kernH, kz, kb, kt - kernH, kb, MC.kern);
+    for (let n = 0, m = 1 + Math.floor(R() * 2); n < m; n++) palme(kx + RU(-0.04, 0.04), kt, kz + RU(-0.04, 0.04), RU(0.12, 0.2));
+    busch(kx, kt, kz, kb * 0.3);
+  }
+
+  // Einfamilienhaeuser: L-Haus, Riegel mit Carport, Split-Level, U-Haus mit Innenhof
+  // (lokal: x quer zur Strasse, z = nach hinten in den Garten; vorne = Strasse)
+  function buildHouse(next, i, hx, hz, rot, L, hv) {
+    const sc = 0.9 + 0.2 * hash(i, 13), acc = COL.accents[Math.floor(hash(i, 15) * 3)];
+    const B = (m, lx, y0, lz, sx, h, sz, col) => putLocal(m, next(m), hx, hz, rot, lx * sc, y0 + h / 2, lz * sc, sx * sc, h, sz * sc, col);
+    const G = FH - SLAB;
+    let roofs = [];
+    for (let k = 0; k < L; k++) {
+      const y = k * FH;
+      if (hv === 1) {                       // L-Haus
+        B(houseGlassM, -0.08, y, -0.06, 0.5, G, 0.3, COL.houseGlass);
+        B(houseSlabM, -0.31, y, -0.06, 0.05, G, 0.31, COL.white);
+        if (k === 0 || k < L - 1) {
+          B(accentM, 0.22, y, 0.04, 0.18, G, 0.42, acc);
+          roofs.push([0.22, y + G, 0.04, 0.24, 0.48]);
+        }
+        roofs.push([-0.08, y + G, -0.06, 0.6, 0.38]);
+      } else if (hv === 2) {                // langer Riegel, Dach kragt als Carport nach vorne
+        B(houseGlassM, -0.06, y, 0.02, 0.62, G, 0.26, COL.houseGlass);
+        B(accentM, -0.4, y, 0.02, 0.05, G, 0.27, acc);
+        B(houseSlabM, 0.27, y, 0.02, 0.05, G, 0.27, COL.white);
+        roofs.push([0.0, y + G, -0.06, 0.8, 0.44]);
+        if (k === 0) { B(accentM, 0.36, 0, -0.24, 0.025, G, 0.025, acc); B(accentM, 0.36, 0, -0.04, 0.025, G, 0.025, acc); }
+      } else if (hv === 3) {                // Split-Level: zweiter Teil eine halbe Etage hoeher
+        B(houseGlassM, -0.15, y, -0.04, 0.34, G, 0.36, COL.houseGlass);
+        roofs.push([-0.15, y + G, -0.04, 0.42, 0.42]);
+        B(accentM, 0.18, y + FH * 0.5, 0.02, 0.3, G, 0.32, acc);
+        B(houseGlassM, 0.18, y + FH * 0.5 + G * 0.25, -0.15, 0.24, G * 0.5, 0.02, COL.houseGlass);
+        roofs.push([0.18, y + FH * 0.5 + G, 0.02, 0.36, 0.38]);
+        if (k === 0) B(houseSlabM, 0.18, 0, 0.02, 0.3, FH * 0.5, 0.32, COL.white);
+      } else {                              // U-Haus mit Innenhof
+        B(houseGlassM, -0.27, y, 0.0, 0.16, G, 0.46, COL.houseGlass);
+        B(houseGlassM, 0.27, y, 0.0, 0.16, G, 0.46, COL.houseGlass);
+        B(accentM, 0, y, 0.17, 0.38, G, 0.12, acc);
+        roofs.push([-0.27, y + G, 0, 0.22, 0.52], [0.27, y + G, 0, 0.22, 0.52], [0, y + G, 0.17, 0.4, 0.18]);
+        if (k === 0) B(accentM, 0, 0.012, -0.04, 0.36, 0.01, 0.3, COL.court);
+      }
+    }
+    for (const [lx, y, lz, sx, sz] of roofs) B(houseSlabM, lx, y, lz, sx, SLAB, sz, COL.white);
+    // Solarpaneele auf dem obersten Dach
+    if (hash(i, 12) < 0.35) {
+      const top = roofs[roofs.length - 1];
+      B(accentM, top[0] - 0.06, top[1] + SLAB, top[2], 0.1, 0.012, 0.16, COL.solar);
+      B(accentM, top[0] + 0.07, top[1] + SLAB, top[2], 0.1, 0.012, 0.16, COL.solar);
     }
   }
 
@@ -1044,6 +1508,12 @@ function build() {
       const tx = gx + 0.1 + 0.8 * hash(i, 41 + k), tz = gz + 0.1 + 0.8 * hash(i, 51 + k);
       if (Math.hypot(tx - px, tz - pz) < 0.18) continue;
       const r = 0.1 + 0.09 * hash(i, 61 + k), th = 0.08 + 0.1 * hash(i, 71 + k);
+      if (WORLD === "mini" && hash(i, 95 + k) < 0.45) {   // Palme
+        const ph = 0.22 + 0.13 * hash(i, 96 + k), px2 = tx - N / 2, pz2 = tz - N / 2;
+        put(trunkM, next(trunkM), px2, ph / 2, pz2, 0, 0.014, ph, 0.014, MC.stamm);
+        for (let n = 0; n < 7; n++) { const a = 2 * Math.PI * n / 7; put(mBushM, next(mBushM), px2 + Math.cos(a) * 0.07, ph - 0.012, pz2 + Math.sin(a) * 0.07, -a, 0.09, 0.009, 0.026, MC.gruen); }
+        continue;
+      }
       put(trunkM, next(trunkM), tx - N / 2, th / 2, tz - N / 2, 0, 0.018, th, 0.018, COL.trunk);
       put(treeM, next(treeM), tx - N / 2, th + r * 0.8, tz - N / 2, hash(i, 81 + k) * 6, r, r * 1.15, r, COL.trees[Math.floor(hash(i, 91 + k) * 4)]);
     }
@@ -1091,7 +1561,7 @@ function build() {
     putLocal(chimM, next(chimM), cx, cz, rot, W * 0.1, top + ch * 0.35, -D * 0.22, anchor ? 0.07 : 0.04, ch * 0.7, anchor ? 0.07 : 0.04, COL.conc);
   }
 
-  for (const m of [...slabM, ...glassM, houseSlabM, houseGlassM, poolM, concM, slitM, chimM, roadM, markM, tileM, metroM, waterM, pathM, treeM, trunkM]) {
+  for (const m of [...slabM, ...glassM, houseSlabM, houseGlassM, accentM, mBoxM, mGlassM, mBushM, mFallM, mMastM, mBallM, poolM, concM, slitM, chimM, roadM, markM, tileM, metroM, waterM, pathM, treeM, trunkM]) {
     m.count = Math.min(cnt.get(m) || 0, m.instanceMatrix.count);
     m.instanceMatrix.needsUpdate = true;
     m.instanceColor.needsUpdate = true;
@@ -1693,15 +2163,29 @@ addEventListener("pointerup", () => {
 cv.addEventListener("pointerleave", () => { hover.visible = false; });
 
 const keys = new Set();
+const isField = el => el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
 addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT") return;
+  if (isField(e.target)) return;
+  if (e.metaKey || e.ctrlKey) { keys.clear(); return; }      // Cmd/Strg: sonst bleibt eine Taste "haengen"
+  if (e.key.startsWith("Arrow")) e.preventDefault();
   const m = { "1": "road", "2": "ave", "3": "R", "4": "C", "5": "O", "6": "I", "7": "metro", "8": "bull", "9": "park", Escape: "cam" }[e.key];
   if (m) setTool(m);
   if (e.key === " ") { e.preventDefault(); setSpeed(speed === 0 ? 1 : 0); }
   if (e.key === "m" || e.key === "M") setCollapsed(!$("stats").classList.contains("collapsed"));
   keys.add(e.key.toLowerCase());
 });
-addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
+addEventListener("keyup", e => { keys.delete(e.key.toLowerCase()); if (e.key === "Meta" || e.key === "Control") keys.clear(); });
+addEventListener("blur", () => keys.clear());
+document.addEventListener("visibilitychange", () => keys.clear());
+// Kamera bleibt immer ueber dem Spielfeld
+function clampTarget() {
+  const lim = N / 2 + 4, t = controls.target;
+  const cx = clamp(t.x, -lim, lim), cz = clamp(t.z, -lim, lim), cy = clamp(t.y, 0, 60);
+  if (cx !== t.x || cz !== t.z || cy !== t.y) {
+    const d = new THREE.Vector3(cx - t.x, cy - t.y, cz - t.z);
+    t.add(d); camera.position.add(d);
+  }
+}
 function panKeys(dt) {
   if (keys.has("t")) tilt(-dt * 1.2);       // T: steiler, Blick von oben
   if (keys.has("g")) tilt(dt * 1.2);        // G: flacher, Blick von unten
@@ -1808,7 +2292,11 @@ function showInfo(i) {
   } else if (t === T.EMPTY) {
     rows.push(["Zonen möglich", S.roadDist[i] >= 1 && S.roadDist[i] <= ZONE_DEPTH ? "ja" : "nein, zu weit weg"]);
   } else if (t === T.METRO) rows.push(["Wirkung", "−45 % Autoverkehr im Umkreis"]);
-  else if (t === T.PARK) rows.push(["Wirkung", "hebt Bodenwert im Umkreis"]);
+  else if (t === T.PARK) {
+    const sz = parkSize[b] || 1, R = parkR(sz);
+    rows.push(["Parkfläche", sz + " Felder (" + fmt(sz * 256) + " m²)"]);
+    rows.push(["Wirkung", "+" + Math.round(parkB(sz) * 100) + " % Bodenwert, " + R * 16 + " m Umkreis"]);
+  }
   if (S.parkBoost[b] > 0.01 && t !== T.PARK) rows.push(["Park-Bonus", "+" + Math.round(S.parkBoost[b] * 100) + " % Bodenwert"]);
   $("ikv").innerHTML = rows.map(([a, v]) => `<span class="label">${a}</span><span>${v}</span>`).join("");
 }
@@ -1916,21 +2404,55 @@ function loop(now) {
   tickAgents(dt * speed);
   drawAgents();
   if (uiDirty || ((now / 250) | 0) !== lastAgUI) { lastAgUI = (now / 250) | 0; updateAgentUI(); }
+  if (miniEnv.visible) { wuerfel.rotation.y += dt * 0.15; wuerfel.position.y = 7 + Math.sin(now / 1800) * 0.3; }
   panKeys(dt);
+  clampTarget();
   controls.update();
   groundCam();
   renderer.render(scene, camera);
   requestAnimationFrame(loop);
 }
 
+// ---------- Welt wechseln ----------
+const hemiL = scene.children.find(o => o.isHemisphereLight);
+function applyWorldStyle() {
+  const mini = WORLD === "mini";
+  const sky = mini ? 0x8cccf2 : 0xdcd8cf;
+  scene.background.setHex(sky); scene.fog.color.setHex(sky);
+  scene.fog.near = mini ? 110 : 90; scene.fog.far = mini ? 230 : 190;
+  ground.material.color.setHex(mini ? 0x6a9c46 : 0xe7e3da);
+  board.material.color.setHex(mini ? 0x86b85c : 0xd2cdc2);
+  sun.color.setHex(mini ? 0xfff0d8 : 0xfff6e8); sun.intensity = mini ? 1.05 : 0.95;
+  if (hemiL) { hemiL.color.setHex(mini ? 0xd8ecff : 0xeef3f8); hemiL.groundColor.setHex(mini ? 0x9aa070 : 0xb8b0a2); }
+  miniEnv.visible = mini;
+  $("world").value = WORLD;
+  document.title = mini ? "ParaWorld – Miniverse" : "ParaWorld – Spiralstadt";
+}
+function switchWorld(w) {
+  if (w === WORLD) return;
+  save();
+  WORLD = w;
+  try { localStorage.setItem("pw-world", w); } catch (e) {}
+  let ok = false;
+  try { ok = load(JSON.parse(localStorage.getItem(saveKey()))); } catch (e) { ok = false; }
+  if (!ok) newCity();
+  selected = -1; showDetail();
+  if (typeof onRoadsChanged === "function") onRoadsChanged();
+  AG.needRebuild = true;
+  computeStats(); computePollution(); computeTraffic();
+  applyWorldStyle(); syncInputs(); build(); updateUI(); save();
+}
+$("world").addEventListener("change", e => { switchWorld(e.target.value); e.target.blur(); keys.clear(); });
+const wuerfel = miniEnv.getObjectByName("wuerfel");
+
 function start(data) {
   let ok = false;
   if (data && data.v) ok = load(data);
-  if (!ok) { try { ok = load(JSON.parse(localStorage.getItem("spiralstadt4"))); } catch (e) { ok = false; } }
+  if (!ok) { try { ok = load(JSON.parse(localStorage.getItem(saveKey()))); } catch (e) { ok = false; } }
   if (!ok) newCity();
   computeStats(); computePollution(); computeTraffic();
   syncInputs(); setTool("road"); setSpeed(1);
-  build(); updateUI();
+  applyWorldStyle(); build(); updateUI();
   window.claude?.hot?.snapshot?.(() => serialize());
   requestAnimationFrame(loop);
 }
