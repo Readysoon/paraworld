@@ -1561,12 +1561,23 @@ function build() {
     putLocal(chimM, next(chimM), cx, cz, rot, W * 0.1, top + ch * 0.35, -D * 0.22, anchor ? 0.07 : 0.04, ch * 0.7, anchor ? 0.07 : 0.04, COL.conc);
   }
 
+  let grew = false;
   for (const m of [...slabM, ...glassM, houseSlabM, houseGlassM, accentM, mBoxM, mGlassM, mBushM, mFallM, mMastM, mBallM, poolM, concM, slitM, chimM, roadM, markM, tileM, metroM, waterM, pathM, treeM, trunkM]) {
-    m.count = Math.min(cnt.get(m) || 0, m.instanceMatrix.count);
+    // Zu wenig Platz? Speicher verdoppeln und gleich neu bauen (sonst fehlen Teile der letzten Haeuser)
+    const need = cnt.get(m) || 0;
+    if (need > m.instanceMatrix.count) {
+      let cap = m.instanceMatrix.count; while (cap < need) cap *= 2;
+      m.instanceMatrix = new THREE.InstancedBufferAttribute(new Float32Array(cap * 16), 16);
+      m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+      grew = true;
+    }
+    m.count = Math.min(need, m.instanceMatrix.count);
     m.instanceMatrix.needsUpdate = true;
     m.instanceColor.needsUpdate = true;
   }
   centerG.position.set(S.cx - half, 0, S.cz - half);
+  if (grew) build();
 }
 
 // =====================================================================
