@@ -1114,6 +1114,7 @@ const tmpC = new THREE.Color();
 const lvColor = v => tmpC.setHSL(0.6 - 0.6 * v, 0.55, 0.62 - 0.12 * v);
 const congColor = c => tmpC.setHSL(clamp(0.33 - 0.33 * (c - 0.4) / 0.9, 0, 0.33), 0.75, 0.5);
 
+const xraySel = () => (typeof selected !== "undefined" && tool === "cam" && selected >= 0 && isZone(S.type[selected]) && S.lvl[selected] > 0) ? selected : -1;
 function build() {
   const MINI = WORLD === "mini";
   const cnt = new Map();
@@ -1163,6 +1164,7 @@ function build() {
       if (MINI && L > 0 && t !== T.I) put(tileM, next(tileM), bx, 0.022, bz, 0, tileS * 0.78, 0.006, tileZ * 0.78, MC.rasen);
     }
     if (L === 0) continue;
+    if (i === xraySel()) continue;          // Durchsicht: Gebaeude wird als Glaskasten gezeigt
     const h1 = hash(i, 1), h2 = hash(i, 2), h3 = hash(i, 3), h4 = hash(i, 4), h5 = hash(i, 5);
     const base = anchor && mw !== mh ? Math.floor(h1 * 2) * Math.PI : Math.floor(h1 * 4) * Math.PI / 2;
 
@@ -1598,10 +1600,15 @@ const AG = {
   lastDay: -1,
   maxAgents: isPhone ? 15000 : 60000,
   stats: { cars: 0, walk: 0, metro: 0 },
+  acc: new Map(),                // Eingang / Garagenrampe je Gebaeude
 };
 const DAY_SECONDS = 60;                         // 1 Tag = 60 s bei 1x
 const SPEED = { car: 26, walk: 7, metro: 70 };   // Felder pro Spielstunde
-const WALK_MAX = 10;                             // Arbeit: bis 10 Felder (ca. 160 m) zu Fuss; Einkauf/Park: bis 18 (290 m)
+// Gebaeude angeklickt: Menschen laufen in echter Zeit (im Zeitraffer), damit drinnen und draussen zusammenpassen
+const SPEED_REAL = { car: 1875, walk: 300, metro: 2800 };   // 30 km/h, 4,8 km/h, 45 km/h in Feldern pro Stunde
+const LOCAL_REAL = { car: 600, walk: 300 };
+let realTime = false;
+const SP = () => realTime ? SPEED_REAL : SPEED;
 
 // naechste Strasse fuer jedes Feld (Breitensuche von allen Strassen aus)
 function computeNearRoad() {
@@ -1678,7 +1685,8 @@ function pickWeighted(list, hx, hz, rnd) {
 // Menschen neu aufstellen (nachts, oder wenn sich der Regler aendert)
 function rebuildAgents() {
   AG.needRebuild = false;
-  AG.fields.clear();
+  AG.fields.clear(); AG.acc.clear();
+  if (typeof IN !== "undefined") { IN.people = []; IN.key = ""; }
   computeNearRoad();
   const jobs = [], shops = [], parks = [], homes = [];
   for (let i = 0; i < N * N; i++) {
@@ -1705,7 +1713,7 @@ function rebuildAgents() {
     for (let k = 0; k < n; k++) {
       // Kein Tagesablauf: jeder pendelt staendig zwischen Wohnung und Ziel,
       // mit eigener Aufenthaltsdauer -> immer gleich viel Verkehr
-      const a = { home: h.i, dest: -1, kind: 0, legs: null, state: 0, stay: 0, homeStay: 0, wait: 0, seg: 0, cell: -1, nxt: -1, p: 0, mode: 0, under: 0, salt: (list.length * 7) & 3 };
+      const a = { id: list.length, pk: -1, ap: null, stand: null, home: h.i, dest: -1, kind: 0, legs: null, state: 0, stay: 0, homeStay: 0, wait: 0, seg: 0, cell: -1, nxt: -1, p: 0, mode: 0, under: 0, salt: (list.length * 7) & 3 };
       const r = rnd();
       if (r < 0.5 && jobs.length) {            // Arbeit
         a.kind = 1; a.dest = pickWeighted(jobs, hx, hz, rnd); a.stay = 1.5 + rnd() * 2.5;
@@ -1724,35 +1732,134 @@ function rebuildAgents() {
 }
 
 // Weg planen: Etappen (zu Fuss / Auto / U-Bahn)
+// Jeder nimmt, was sich lohnt: geschaetzte Minuten fuer jede Moeglichkeit, das kleinste gewinnt.
+// Auto: Tiefgarage raus und rein kostet Zeit, dazu Stau und Kosten -> erst ab ca. 400 m lohnend.
 function planTrip(a, from, to) {
   const rs = AG.nearRoad[from], rd = AG.nearRoad[to];
   if (rs < 0 || rd < 0) return null;
   const f = fieldTo(rd);
   const d = f[rs];
   if (d === 65535) return null;              // keine Strassenverbindung
-  if (d <= WALK_MAX || (a.kind >= 2 && d <= 18)) return [{ mode: 1, from: rs, to: rd }];
+  const m = d * 16;
+  const walk = m / 80 * (a.kind >= 2 ? 0.8 : 1);               // 4,8 km/h, Einkauf/Park: lieber zu Fuss
+  const jam = 1 + Math.max(0, ((S.cong[rs] || 0) + (S.cong[rd] || 0)) / 2 - 0.8);
+  const car = 3 + m / 500 * jam + 1;                            // Garage raus + rein 3 min, 30 km/h, Kosten
+  let best = walk, legs = [{ mode: 1, from: rs, to: rd }];
+  if (car < best) { best = car; legs = [{ mode: 2, from: rs, to: rd }]; }
   const sa = stationNear(rs), sb = stationNear(rd);
   if (sa >= 0 && sb >= 0 && sa !== sb) {
-    return [{ mode: 1, from: rs, to: sa }, { mode: 3, from: sa, to: sb, len: d }, { mode: 1, from: sb, to: rd }];
+    const w1 = fieldTo(sa)[rs], w2 = f[sb];
+    if (w1 !== 65535 && w2 !== 65535) {
+      const metro = (w1 + w2) * 16 / 80 + 3 + m / 900 + 1;      // hin- und weggehen, warten, fahren
+      if (metro < best) { best = metro; legs = [{ mode: 1, from: rs, to: sa }, { mode: 3, from: sa, to: sb, len: d }, { mode: 1, from: sb, to: rd }]; }
+    }
   }
-  return [{ mode: 2, from: rs, to: rd }];
+  return legs;
 }
 function startLeg(a) {
   const L = a.legs[a.seg];
   a.mode = L.mode; a.cell = L.from; a.p = 0;
-  if (L.mode === 3) { a.under = (L.len || 10) / SPEED.metro; a.nxt = -1; return; }
+  if (L.mode === 3) { a.under = (L.len || 10) / SP().metro; a.nxt = -1; return; }
   a.field = fieldTo(L.to);
   a.nxt = a.cell === L.to ? -1 : stepTowards(a.cell, a.field, a.salt);
 }
 
 const dayHours = dt => dt * 24 / DAY_SECONDS;
+// Zugang eines Grundstuecks: Eingang und Rampe zur Tiefgarage an der naechsten Strasse
+function accessOf(b) {
+  const an = isAnchor(b), w = an ? S.mw[b] : 1, h = an ? S.mh[b] : 1, key = w + ":" + h;
+  let A = AG.acc.get(b);
+  if (A && A.key === key) return A;
+  const half = N / 2, x0 = b % N, z0 = (b / N) | 0, cx = x0 + w / 2 - half, cz = z0 + h / 2 - half;
+  const hx = w / 2 - 0.1, hz = h / 2 - 0.1;
+  let rc = -1, best = 1e9;
+  for (let gz = z0 - 1; gz <= z0 + h; gz++) for (let gx = x0 - 1; gx <= x0 + w; gx++) {
+    const inX = gx >= x0 && gx < x0 + w, inZ = gz >= z0 && gz < z0 + h;
+    if (inX === inZ) continue;                          // innen oder Ecke
+    if (!inside(gx, gz) || S.type[idx(gx, gz)] !== T.ROAD) continue;
+    const d = Math.hypot(gx + 0.5 - half - cx, gz + 0.5 - half - cz) + hash(b, gx * 7 + gz * 13) * 0.4;
+    if (d < best) { best = d; rc = idx(gx, gz); }
+  }
+  if (rc < 0) rc = AG.nearRoad[b];
+  if (rc < 0) rc = b;
+  const rx = rc % N + 0.5 - half, rz = ((rc / N) | 0) + 0.5 - half, gx = rc % N, gz = (rc / N) | 0;
+  let ax = 0, az = 0;
+  if (gx < x0) ax = -1; else if (gx >= x0 + w) ax = 1; else if (gz < z0) az = -1; else az = 1;
+  const P = (along, out, y = 0.03) => ax !== 0
+    ? [cx + ax * (hx + out), y, clamp(along, cz - hz + 0.08, cz + hz - 0.08)]
+    : [clamp(along, cx - hx + 0.08, cx + hx - 0.08), y, cz + az * (hz + out)];
+  const t = ax !== 0 ? rz : rx;
+  A = {
+    key, rc, cx, cz, hx, hz, ax, az,
+    E: P(t - 0.18, 0),                 // Eingang an der Fassade
+    S: P(t - 0.18, 0.1 + 0.04),        // Gehsteig davor
+    Rm: P(t + 0.22, 0.02, 0.06),       // Rampe oben
+    Rd: P(t + 0.22, 0.32, 0.08),       // Fahrspur vor der Rampe
+    Rin: P(t + 0.22, -0.3, -0.12),     // Rampe unten (verschwindet unter der Erde)
+  };
+  AG.acc.set(b, A);
+  return A;
+}
+const LOCAL = { car: 3, walk: 1.6 };      // Felder pro Spielstunde auf dem Grundstueck (gut sichtbar)
+function setAp(a, pts, car, done) {
+  let len = 0; for (let k = 1; k < pts.length; k++) len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][2] - pts[k - 1][2]);
+  a.ap = { pts, car, done, t: 0, len: Math.max(len, 0.05) };
+}
+function apPos(a) {
+  const ap = a.ap; let d = ap.t;
+  for (let k = 1; k < ap.pts.length; k++) {
+    const p0 = ap.pts[k - 1], p1 = ap.pts[k], l = Math.hypot(p1[0] - p0[0], p1[2] - p0[2]);
+    if (d <= l || k === ap.pts.length - 1) { const u = l > 0 ? Math.min(1, d / l) : 1; return [p0[0] + (p1[0] - p0[0]) * u, p0[1] + (p1[1] - p0[1]) * u, p0[2] + (p1[2] - p0[2]) * u]; }
+    d -= l;
+  }
+  return ap.pts[ap.pts.length - 1];
+}
+// Park: jeder sucht sich ein Platzerl im Park
+function standPoint(a, b) {
+  const half = N / 2, x = b % N, z = (b / N) | 0;
+  return [x + 0.2 + hash(a.id, 41) * 0.6 - half, 0.05, z + 0.2 + hash(a.id, 42) * 0.6 - half];
+}
+// Ende der letzten Etappe: zu Fuss zum Eingang, mit dem Auto in die Tiefgarage
+function reachDest(a) {
+  const out = a.state === 1, b = out ? a.dest : a.home, A = accessOf(b), car = a.mode === 2;
+  a.ab = b; a.arr = a.state; a.car = car;
+  const park = S.type[b] === T.PARK;
+  if (car) setAp(a, [A.Rd, A.Rm, A.Rin], true, 1);
+  else setAp(a, [A.S, park ? standPoint(a, b) : A.E], false, 1);
+  a.state = 21;
+}
+function finishArrive(a) {
+  a.state = a.arr; arrive(a);
+  a.pk = a.car ? a.ab : -1;
+  if (S.type[a.ab] === T.PARK && !a.car) a.stand = a.ap.pts[a.ap.pts.length - 1];
+  else if (S.type[a.ab] === T.PARK) a.stand = standPoint(a, a.ab);
+  a.ap = null;
+}
+// Gebaeude verlassen: zu Fuss vom Eingang, mit dem Auto aus der Tiefgarage
+function leaveOutside(a, b, car) {
+  const A = accessOf(b), from = a.stand || A.E;
+  a.stand = null;
+  if (car) { setAp(a, [A.Rin, A.Rm, A.Rd], true, 2); a.pk = -1; }
+  else setAp(a, [from, A.S], false, 2);
+  a.state = 20;
+}
+function tickAp(a, dh) {
+  const LS = realTime ? LOCAL_REAL : LOCAL;
+  a.ap.t += dh * (a.ap.car ? LS.car : LS.walk);
+  if (a.ap.t < a.ap.len) return;
+  if (a.ap.done === 2) { a.ap = null; a.state = a.next; startLeg(a); return; }
+  // angekommen an Tuer oder Garage
+  if (S.type[a.ab] !== T.PARK && insideActive(a.ab)) { inEnter(a); return; }
+  finishArrive(a);
+}
 function arrive(a) {
   if (a.state === 1) { a.state = 2; a.wait = a.stay; }
   else { a.state = 0; a.wait = a.homeStay; }
 }
 function tickAgents(dtReal) {
   if (!AG.on) return;
-  const dh = dayHours(dtReal);
+  realTime = typeof IN !== "undefined" && IN.active;
+  const dh = realTime ? dtReal * IN_TZ / 3600 : dayHours(dtReal);
   // regelmaessig neu verteilen (neue Haeuser, neue Jobs); Pendler sind zeitlich versetzt,
   // daher faellt das kaum auf
   AG.sinceRebuild = (AG.sinceRebuild || 0) + dh;
@@ -1768,16 +1875,21 @@ function tickAgents(dtReal) {
       const out = a.state === 0;
       a.legs = out ? planTrip(a, a.home, a.dest) : planTrip(a, a.dest, a.home); a.seg = 0;
       if (!a.legs) { a.state = 4; continue; }          // kein Weg: bleibt
-      a.state = out ? 1 : 3; startLeg(a);
+      const b0 = out ? a.home : a.dest, car0 = a.legs[0].mode === 2;
+      a.next = out ? 1 : 3;
+      // im ausgewaehlten Gebaeude: erst durchs Haus (Aufzug, Garage), dann hinaus
+      if (S.type[b0] !== T.PARK && insideActive(b0)) { inLeave(a, b0, car0, out ? 0 : a.kind); a.state = 13; continue; }
+      leaveOutside(a, b0, car0);
     }
+    if (a.state === 20 || a.state === 21) { tickAp(a, dh); continue; }
     if (a.state !== 1 && a.state !== 3) continue;
     // unterwegs
     if (a.mode === 3) {
       a.under -= dh; metro++;
-      if (a.under <= 0) { a.seg++; if (a.seg >= a.legs.length) arrive(a); else startLeg(a); }
+      if (a.under <= 0) { a.seg++; if (a.seg >= a.legs.length) reachDest(a); else startLeg(a); }
       continue;
     }
-    let v = a.mode === 2 ? SPEED.car : SPEED.walk;
+    let v = a.mode === 2 ? SP().car : SP().walk;
     if (a.mode === 2) {
       // Stau: viele Autos auf einem Feld -> langsamer (Allee hat mehr Platz)
       // ca. 14 Menschen in Autos pro Strassenfeld (2-spurig), 30 bei Alleen
@@ -1794,7 +1906,7 @@ function tickAgents(dtReal) {
     }
     if (a.nxt < 0) {                          // Etappe geschafft
       a.seg++;
-      if (a.seg >= a.legs.length) arrive(a);
+      if (a.seg >= a.legs.length) reachDest(a);
       else startLeg(a);
     }
   }
@@ -1837,6 +1949,13 @@ function drawAgents() {
   const cp = carDots.geometry.attributes.position.array, wp = walkDots.geometry.attributes.position.array;
   let nc = 0, nw = 0;
   for (const a of AG.list) {
+    if (a.state === 20 || a.state === 21 || (a.state === 2 && a.stand)) {
+      if (nc + nw >= AG.maxAgents) continue;
+      const q = a.ap ? apPos(a) : a.stand;
+      if (a.ap && a.ap.car) { cp[nc * 3] = q[0]; cp[nc * 3 + 1] = q[1]; cp[nc * 3 + 2] = q[2]; nc++; }
+      else { wp[nw * 3] = q[0]; wp[nw * 3 + 1] = q[1]; wp[nw * 3 + 2] = q[2]; nw++; }
+      continue;
+    }
     if ((a.state !== 1 && a.state !== 3) || a.mode === 3 || a.cell < 0) continue;
     const x0 = a.cell % N, z0 = (a.cell / N) | 0;
     let x = x0 + 0.5, z = z0 + 0.5, dx = 0, dz = 0;
@@ -1855,7 +1974,257 @@ function drawAgents() {
   walkDots.geometry.setDrawRange(0, nw); walkDots.geometry.attributes.position.needsUpdate = true;
 }
 
-function onRoadsChanged() { AG.fields.clear(); computeNearRoad(); }
+function onRoadsChanged() { AG.fields.clear(); AG.acc.clear(); computeNearRoad(); }
+
+// =====================================================================
+//  INNENLEBEN: eine zusammenhaengende Simulation mit den Menschen draussen.
+//  Wer ins ausgewaehlte Gebaeude kommt (zu Fuss durch den Eingang, mit dem Auto
+//  ueber die Rampe in die Tiefgarage), geht drinnen zum Aufzug und faehrt zu
+//  seinem Stockwerk. Wer losgeht, faehrt erst hinunter (Erdgeschoss oder Garage).
+//  Zeit drinnen: Zeitraffer, damit man Aufzuege und Wege verfolgen kann.
+// =====================================================================
+const IN_TZ = 20, IN_CAB = 13, IN_DOOR = 6, IN_WALK = 1.3 / 16, IN_CAR = 3 / 16, IN_STAIR = 0.08, IN_MAXP = 3000, GFH = 0.17;
+const fy = f => f >= 0 ? f * FH : f * GFH;                 // Hoehe eines Stockwerks (Garage: 2,7 m)
+// Aufzuege: wie bei echten Hochhaeusern nach Menschen und Hoehe
+function elevCount(b) {
+  if (!isZone(S.type[b]) || S.lvl[b] <= 4 || isSmallHouse(b)) return 0;
+  const u = useOf(b), occ = u.res + u.jobs + u.shop * 0.2, F = S.lvl[b];
+  return Math.min(24, Math.max(1, Math.ceil(occ / 120), Math.ceil(F / 20), F > 12 ? 2 : 1));
+}
+// Tiefgarage: ca. 12 Plaetze pro Feld und Ebene, Autos fuer etwa 35 % der Menschen
+function garageLevels(b) {
+  const u = useOf(b), w = isAnchor(b) ? S.mw[b] : 1, h = isAnchor(b) ? S.mh[b] : 1;
+  return clamp(Math.ceil((u.res + u.jobs + u.shop * 0.2) * 0.35 / (12 * w * h)), 1, 5);
+}
+// Fahrgeschwindigkeit: niedrig 1,6 m/s ... sehr hoch 6 m/s (in Stockwerken pro Sekunde)
+const elevSpeed = F => (F <= 10 ? 1.6 : F <= 25 ? 2.5 : F <= 50 ? 4 : 6) / 3.2;
+const IN = { b: -1, key: "", active: false, people: [], el: [], waitAvg: 0, waits: 0, nIn: 0, nOut: 0, gh: 0 };
+const insideActive = b => IN.active && IN.b === b;
+const inG = new THREE.Group(); inG.visible = false; scene.add(inG);
+const lm = (c, o) => new THREE.LineBasicMaterial({ color: c, transparent: true, opacity: o, depthTest: false });
+const inFloorL = new THREE.LineSegments(new THREE.BufferGeometry(), lm(0x6f8fbf, 0.45));
+const inGarL = new THREE.LineSegments(new THREE.BufferGeometry(), lm(0x8a7f70, 0.6));
+const inPathL = new THREE.LineSegments(new THREE.BufferGeometry(), lm(0x2f6bff, 0.7));
+const inShaftL = new THREE.LineSegments(new THREE.BufferGeometry(), lm(0xffb21e, 0.85));
+const inCab = new THREE.InstancedMesh(box, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false }), 24);
+inCab.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(24 * 3), 3);
+inCab.frustumCulled = false; inCab.count = 0;
+const inGhost = new THREE.Mesh(box, new THREE.MeshStandardMaterial({ color: 0xdde6f2, transparent: true, opacity: 0.16, depthWrite: false, roughness: 0.2 }));
+const inGhostE = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0x9fb4cc, transparent: true, opacity: 0.6 }));
+inG.add(inGhost, inGhostE);
+for (const o of [inFloorL, inGarL, inPathL, inShaftL, inCab]) { o.renderOrder = 10; o.frustumCulled = false; inG.add(o); }
+const inDots = makeDots(IN_MAXP, 0.09, 0xff3d7f, 3, 9);        // Menschen im Haus
+const inCars = makeDots(IN_MAXP, 0.2, 0xffb21e, 3.5, 14);      // Autos in der Tiefgarage
+for (const d of [inDots, inCars]) { d.material.depthTest = false; d.renderOrder = 11; d.visible = false; }
+
+// Wer gerade drinnen unterwegs ist, wird beim Wechsel sauber nach draussen/an sein Ziel gesetzt
+function flushInside() {
+  for (const p of IN.people) {
+    const a = p.a; if (!a) continue;
+    if (p.kind === "in") { a.ap = a.ap || { pts: [[0, 0, 0]] }; finishArrive(a); }
+    else leaveOutside(a, IN.b, p.car);
+  }
+  IN.people = [];
+}
+function setupInside(b) {
+  flushInside();
+  const L = S.lvl[b], A = accessOf(b), cx = A.cx, cz = A.cz;
+  const fx = A.hx - 0.04, fz = A.hz - 0.04, F = L, E = elevCount(b), K = garageLevels(b);
+  // Aufzugskern in der Mitte, Schaechte im Raster, davor die Lobby
+  const SH = 0.12, cols = Math.max(1, Math.ceil(Math.sqrt(E))), rows = Math.ceil(E / cols);
+  const el = [];
+  for (let k = 0; k < E; k++) {
+    const c = k % cols, r = (k / cols) | 0;
+    el.push({ x: cx + (c - (cols - 1) / 2) * SH, z: cz + (r - (rows - 1) / 2) * SH, y: 0, dir: 0, door: 0, riders: [], stops: new Set() });
+  }
+  const lobX = cx, lobZ = cz + (rows / 2) * SH + 0.06;
+  const stX = cx - fx + 0.08, stZ = cz - fz + 0.08;         // Treppenhaus in der Ecke
+  // Rampe unten: von der Rampe ein Stueck ins Grundstueck auf Ebene -1
+  const rb = [A.Rm[0] - (A.ax || 0) * 0.35, fy(-1), A.Rm[2] - (A.az || 0) * 0.35];
+  const fl = [], ga = [], pa = [], sh = [], step = F > 90 ? 3 : F > 45 ? 2 : 1;
+  const rect = (arr, y) => arr.push(cx - fx, y, cz - fz, cx + fx, y, cz - fz, cx + fx, y, cz - fz, cx + fx, y, cz + fz,
+    cx + fx, y, cz + fz, cx - fx, y, cz + fz, cx - fx, y, cz + fz, cx - fx, y, cz - fz);
+  const cross = y => pa.push(cx - fx, y, lobZ, cx + fx, y, lobZ, lobX, y, cz - fz, lobX, y, cz + fz);
+  for (let f = 0; f <= F; f += step) { rect(fl, fy(f) + 0.01); if (f < F) cross(fy(f) + 0.02); }
+  for (let f = -1; f >= -K; f--) { rect(ga, fy(f) + 0.01); cross(fy(f) + 0.02); }
+  pa.push(lobX, 0.02, lobZ, A.E[0], 0.02, A.E[2]);          // Eingang -> Lobby
+  ga.push(A.Rm[0], 0.02, A.Rm[2], rb[0], rb[1] + 0.01, rb[2]); // Garagenrampe
+  pa.push(stX, fy(-K), stZ, stX, fy(F), stZ);                // Treppe
+  for (const e of el) for (const [ox, oz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]])
+    sh.push(e.x + ox * SH * 0.45, fy(-K), e.z + oz * SH * 0.45, e.x + ox * SH * 0.45, fy(F), e.z + oz * SH * 0.45);
+  const setL = (o, arr) => { o.geometry.dispose(); o.geometry = new THREE.BufferGeometry(); o.geometry.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3)); };
+  setL(inFloorL, fl); setL(inGarL, ga); setL(inPathL, pa); setL(inShaftL, sh);
+  for (const g of [inGhost, inGhostE]) { g.position.set(cx, F * FH / 2, cz); g.scale.set(fx * 2 + 0.06, F * FH, fz * 2 + 0.06); }
+  Object.assign(IN, { b, F, E, K, el, cx, cz, fx, fz, A, rb, lobX, lobZ, stX, stZ, people: [], waitAvg: 0, waits: 0, nIn: 0, nOut: 0, gh: 0,
+    v: elevSpeed(F), cab: Math.max(1, Math.floor(IN_CAB / (AG.groupUsed || 1))) });
+}
+// Stockwerk eines Menschen: unten Laeden, in der Mitte Bueros, oben Wohnungen
+function floorFor(a, b, role) {
+  const F = S.lvl[b]; if (F <= 1) return 0;
+  const u = useOf(b), m = u.mix;
+  let lo = 0, hi = F - 1;
+  if (m) {
+    if (role === 0 && m.r > 0) { lo = m.c + m.o; }
+    else if (role === 1 && m.o > 0 && u.jobsO) { lo = m.c; hi = m.c + m.o - 1; }
+    else if ((role === 1 || role === 2) && m.c > 0) { hi = m.c - 1; }
+  }
+  hi = Math.max(lo, Math.min(F - 1, hi));
+  return lo + Math.floor(hash(a.id, b + 3) * (hi - lo + 1));
+}
+const unitOf = (a, f) => {       // Wohnung/Buero am Flur
+  const t = hash(a.id, 7 + f) * 2 - 1;
+  return hash(a.id, 9) < 0.5 ? [IN.cx + t * IN.fx, IN.lobZ] : [IN.lobX, IN.cz + t * IN.fz];
+};
+const levelOf = a => -1 - (a.id % IN.K);
+const spotOf = a => [IN.cx + (hash(a.id, 31) - 0.5) * 2 * IN.fx * 0.85, fy(levelOf(a)) + 0.04, IN.cz + (hash(a.id, 32) - 0.5) * 2 * IN.fz * 0.85];
+// von draussen herein (zu Fuss am Eingang, mit dem Auto unten an der Rampe)
+function inEnter(a) {
+  const b = IN.b, tf = floorFor(a, b, a.arr === 1 ? a.kind : 0), end = unitOf(a, tf);
+  a.state = 12; a.ap = null; IN.nIn++;
+  if (a.car) {
+    const sp = spotOf(a);
+    IN.people.push({ a, kind: "in", car: true, s: 7, f: levelOf(a), tf, from: IN.rb, to: sp, t: 0, x: IN.rb[0], z: IN.rb[2], end });
+  } else IN.people.push({ a, kind: "in", car: false, s: 0, f: 0, tf, x: IN.A.E[0], z: IN.A.E[2], end });
+}
+// von der Wohnung/dem Buero hinaus
+function inLeave(a, b, car, role) {
+  const f = floorFor(a, b, role), [ux, uz] = unitOf(a, f);
+  IN.nOut++;
+  IN.people.push({ a, kind: "out", car, s: 0, f, tf: car ? levelOf(a) : 0, x: ux, z: uz, end: car ? (() => { const q = spotOf(a); return [q[0], q[2]]; })() : [IN.A.E[0], IN.A.E[2]] });
+}
+function inCall(p) {
+  // Ruf an den Aufzug mit der kuerzesten Wartezeit
+  let best = null, bc = 1e9;
+  for (const e of IN.el) {
+    const goingTo = e.dir === 0 || (e.dir > 0 ? p.f >= e.y : p.f <= e.y);
+    const c = Math.abs(e.y - p.f) + (goingTo ? 0 : IN.F) + e.riders.length * 0.3 + e.stops.size * 0.6;
+    if (c < bc) { bc = c; best = e; }
+  }
+  p.e = best; best.stops.add(p.f);
+}
+const walkTo = (p, x, z, d) => {
+  const dx = x - p.x, dz = z - p.z, l = Math.hypot(dx, dz);
+  if (l <= d) { p.x = x; p.z = z; return true; }
+  p.x += dx / l * d; p.z += dz / l * d; return false;
+};
+function inDone(p) {
+  const a = p.a;
+  if (p.kind === "in") { a.ap = { pts: [[0, 0, 0]] }; finishArrive(a); }
+  else if (p.car) { p.s = 8; p.from = spotOf(a); p.to = IN.rb; p.t = 0; a.pk = -1; return; }
+  else leaveOutside(a, IN.b, false);
+  p.s = 9;
+}
+function tickInside(dtReal) {
+  const b = selected, active = AG.on && b >= 0 && tool === "cam" && isZone(S.type[b]) && S.lvl[b] > 0;
+  inG.visible = inDots.visible = inCars.visible = active;
+  if (!active) { if (IN.active) { flushInside(); IN.active = false; IN.b = -1; IN.key = ""; dirty = true; } return; }
+  const key = b + ":" + S.lvl[b] + ":" + S.mw[b] + ":" + S.mh[b];
+  if (key !== IN.key) { IN.key = key; setupInside(b); dirty = true; }
+  IN.active = true;
+  IN.gh += Math.min(0.1, dtReal) * speed * IN_TZ / 3600;
+  const dt = Math.min(0.1, dtReal) * IN_TZ * speed;
+  if (dt > 0) {
+    const now = (IN.time = (IN.time || 0) + dt);
+    for (const p of IN.people) {
+      if (p.s === 7 || p.s === 8) {                    // Auto in der Garage
+        const l = Math.hypot(p.to[0] - p.from[0], p.to[1] - p.from[1], p.to[2] - p.from[2]);
+        p.t += IN_CAR * dt / Math.max(l, 0.01);
+        if (p.t >= 1) {
+          if (p.s === 7) { p.a.pk = IN.b; p.s = 0; p.x = p.to[0]; p.z = p.to[2]; }   // geparkt, jetzt zu Fuss
+          else { p.s = 9; leaveOutside(p.a, IN.b, true); }
+        }
+      } else if (p.s === 0) {                          // zum Aufzug oder zur Treppe gehen
+        const stairs = IN.E === 0 || p.f === p.tf;
+        if (p.f === p.tf) { p.s = 3; continue; }
+        if (walkTo(p, stairs ? IN.stX : IN.lobX, stairs ? IN.stZ : IN.lobZ, IN_WALK * dt)) {
+          if (stairs) p.s = 5; else { p.s = 1; p.t = now; inCall(p); }
+        }
+      } else if (p.s === 1 && !p.e) {                 // Kabine war voll: neu rufen
+        inCall(p);
+      } else if (p.s === 5) {                          // Treppe
+        const d = IN_STAIR * dt;
+        if (Math.abs(p.tf - p.f) <= d) { p.f = p.tf; p.s = 3; } else p.f += Math.sign(p.tf - p.f) * d;
+      } else if (p.s === 3) {                          // zum Ziel auf der Etage
+        if (walkTo(p, p.end[0], p.end[1], IN_WALK * dt)) inDone(p);
+      }
+    }
+    // Aufzuege (Sammelsteuerung: faehrt in eine Richtung, bis dort keine Halte mehr sind)
+    for (const e of IN.el) {
+      if (e.door > 0) {
+        e.door -= dt;
+        const fl = Math.round(e.y);
+        if (e.door <= IN_DOOR - 1.5 && !e.served) {   // aussteigen, dann einsteigen
+          e.served = true;
+          e.riders = e.riders.filter(p => { if (p.tf !== fl) return true; p.f = fl; p.s = 3; p.x = IN.lobX; p.z = IN.lobZ; return false; });
+          for (const p of IN.people) if (p.s === 1 && p.e === e && p.f === fl) {
+            if (e.riders.length >= IN.cab) { p.e = null; continue; }    // voll: neu rufen
+            p.s = 2; e.riders.push(p); e.stops.add(p.tf);
+            const w = now - p.t; IN.waitAvg = IN.waits ? IN.waitAvg * 0.9 + w * 0.1 : w; IN.waits++;
+          }
+          e.stops.delete(fl);
+          if (e.riders.some(p => p.tf === fl)) e.stops.add(fl);
+        }
+        if (e.door <= 0) e.served = false;
+        continue;
+      }
+      if (e.riders.length >= IN.cab) for (const f of e.stops) if (Math.abs(f - e.y) < 1e-6 && !e.riders.some(p => p.tf === f)) e.stops.delete(f);
+      if (e.stops.size === 0) { e.dir = 0; continue; }
+      let ahead = false;
+      for (const f of e.stops) if (e.dir === 0 || (e.dir > 0 ? f > e.y - 1e-6 : f < e.y + 1e-6)) { ahead = true; break; }
+      if (!ahead || e.dir === 0) {
+        let near = null, nd = 1e9; for (const f of e.stops) { const d = Math.abs(f - e.y); if (d < nd) { nd = d; near = f; } }
+        e.dir = near > e.y ? 1 : near < e.y ? -1 : 0;
+        if (e.dir === 0) { e.door = IN_DOOR; continue; }
+      }
+      const ny = e.y + e.dir * IN.v * dt;
+      let hit = null;
+      for (const f of e.stops) if (e.dir > 0 ? f > e.y - 1e-6 && f <= ny : f < e.y + 1e-6 && f >= ny) { if (hit === null || (e.dir > 0 ? f < hit : f > hit)) hit = f; }
+      if (hit !== null) { e.y = hit; e.door = IN_DOOR; } else e.y = clamp(ny, -IN.K, IN.F);
+      for (const p of e.riders) p.f = e.y;
+    }
+    IN.people = IN.people.filter(p => p.s !== 9);
+  }
+  // Zeichnen: Menschen, fahrende und geparkte Autos
+  const arr = inDots.geometry.attributes.position.array, car = inCars.geometry.attributes.position.array;
+  let n = 0, nc = 0;
+  for (const p of IN.people) {
+    if (p.s === 7 || p.s === 8) {
+      if (nc >= IN_MAXP) continue;
+      const u = Math.min(1, p.t);
+      car[nc * 3] = p.from[0] + (p.to[0] - p.from[0]) * u; car[nc * 3 + 1] = p.from[1] + (p.to[1] - p.from[1]) * u; car[nc * 3 + 2] = p.from[2] + (p.to[2] - p.from[2]) * u; nc++;
+      continue;
+    }
+    if (n >= IN_MAXP) continue;
+    let x = p.x, z = p.z;
+    if (p.s === 2) { const k = IN.el.indexOf(p.e), e = p.e; x = e.x + ((p.tf * 7 + k) % 3 - 1) * 0.025; z = e.z + ((p.a.id * 3) % 3 - 1) * 0.025; }
+    arr[n * 3] = x; arr[n * 3 + 1] = fy(p.f) + 0.05; arr[n * 3 + 2] = z; n++;
+  }
+  let parked = 0;
+  for (const a of AG.list) if (a.pk === IN.b) {
+    parked++;
+    if (nc >= IN_MAXP) continue;
+    const q = spotOf(a); car[nc * 3] = q[0]; car[nc * 3 + 1] = q[1]; car[nc * 3 + 2] = q[2]; nc++;
+  }
+  IN.parked = parked;
+  inDots.geometry.setDrawRange(0, n); inDots.geometry.attributes.position.needsUpdate = true;
+  inCars.geometry.setDrawRange(0, nc); inCars.geometry.attributes.position.needsUpdate = true;
+  inCab.count = IN.el.length;
+  IN.el.forEach((e, k) => put(inCab, k, e.x, fy(e.y) + 0.08, e.z, 0, 0.1, 0.15, 0.1, e.door > 0 ? C(0xffe08a) : C(0xffb21e)));
+  inCab.instanceMatrix.needsUpdate = true; inCab.instanceColor.needsUpdate = true;
+}
+function insideRows(b) {
+  if (!AG.on) return [["Innen", "Menschen-Simulation einschalten"]];
+  if (b < 0 || IN.b !== b || !IN.active) return [];
+  const G = AG.groupUsed || 1, ppl = IN.people.filter(p => p.s !== 7 && p.s !== 8);
+  const wait = ppl.filter(p => p.s === 1).length, ride = ppl.filter(p => p.s === 2).length;
+  const r = [];
+  r.push(["Aufzüge", IN.E ? IN.E + " · " + (IN.v * 3.2).toFixed(1) + " m/s, bis Garage −" + IN.K : "keine (Treppe)"]);
+  r.push(["Tiefgarage", IN.K + (IN.K === 1 ? " Ebene" : " Ebenen") + " · " + fmt(IN.parked * G) + " Autos"]);
+  r.push(["Im Haus unterwegs", fmt(ppl.length * G) + (IN.E ? " (" + wait * G + " warten, " + ride * G + " fahren)" : "")]);
+  if (IN.E) r.push(["Ø Wartezeit", IN.waits ? Math.round(IN.waitAvg) + " s" : "–"]);
+  if (IN.gh > 0.5) r.push(["Kommen / Gehen", fmt(IN.nIn * G / IN.gh) + " / " + fmt(IN.nOut * G / IN.gh) + " pro Stunde"]);
+  return r;
+}
 
 // =====================================================================
 //  BEDIENUNG
@@ -2260,6 +2629,7 @@ function showDetail() {
   if (S.poll[b] > 0.05) rows.push(["Abgase", Math.round(S.poll[b] * 100) + " %"]);
   if (S.parkBoost[b] > 0.01) rows.push(["Park-Bonus", "+" + Math.round(S.parkBoost[b] * 100) + " %"]);
   if (isZone(t)) rows.push(["Wirtschaft (Stadt)", Math.round(clamp(S.st.econ, 0, 1.2) * 100) + " %"]);
+  if (isZone(t) && L > 0) { rows.push(["<b>Innen</b>", "<span style='color:var(--muted)'>Menschen in echter Zeit, " + IN_TZ + "× schneller</span>"]); rows.push(...insideRows(b)); }
   $("dkv").innerHTML = rows.map(([a, v]) => `<span class="label">${a}</span><span>${v}</span>`).join("");
   // Nutzungs-Balken
   const mix = $("dmix");
@@ -2414,6 +2784,7 @@ function loop(now) {
   if (dirty && now - lastBuild > 120) { build(); dirty = false; lastBuild = now; }
   tickAgents(dt * speed);
   drawAgents();
+  tickInside(dt);
   if (uiDirty || ((now / 250) | 0) !== lastAgUI) { lastAgUI = (now / 250) | 0; updateAgentUI(); }
   if (miniEnv.visible) { wuerfel.rotation.y += dt * 0.15; wuerfel.position.y = 7 + Math.sin(now / 1800) * 0.3; }
   panKeys(dt);
