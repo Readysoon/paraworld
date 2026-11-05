@@ -241,6 +241,7 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
   <span class="sep"></span>
   <div class="speed" role="group" aria-label="Tempo">
     <button data-speed="0" title="Pause (Leertaste)">❚❚</button>
+    <button data-speed="0.5" title="Halbe Geschwindigkeit">½×</button>
     <button data-speed="1">1×</button>
     <button data-speed="2">2×</button>
     <button data-speed="4">4×</button>
@@ -1114,7 +1115,7 @@ const tmpC = new THREE.Color();
 const lvColor = v => tmpC.setHSL(0.6 - 0.6 * v, 0.55, 0.62 - 0.12 * v);
 const congColor = c => tmpC.setHSL(clamp(0.33 - 0.33 * (c - 0.4) / 0.9, 0, 0.33), 0.75, 0.5);
 
-const xraySel = () => (typeof selected !== "undefined" && tool === "cam" && selected >= 0 && isZone(S.type[selected]) && S.lvl[selected] > 0) ? selected : -1;
+const xraySel = () => typeof XB !== "undefined" ? XB : -1;
 function build() {
   const MINI = WORLD === "mini";
   const cnt = new Map();
@@ -1728,6 +1729,8 @@ function rebuildAgents() {
       list.push(a);
     }
   }
+  // wer gerade verfolgt wird, bleibt dabei (gleiche Person, gleicher Weg)
+  if (typeof FOLLOW !== "undefined" && FOLLOW) { FOLLOW.id = list.length; list.push(FOLLOW); }
   AG.list = list;
 }
 
@@ -1858,16 +1861,19 @@ function arrive(a) {
 }
 function tickAgents(dtReal) {
   if (!AG.on) return;
-  realTime = typeof IN !== "undefined" && IN.active;
-  const dh = realTime ? dtReal * IN_TZ / 3600 : dayHours(dtReal);
-  // regelmaessig neu verteilen (neue Haeuser, neue Jobs); Pendler sind zeitlich versetzt,
-  // daher faellt das kaum auf
-  AG.sinceRebuild = (AG.sinceRebuild || 0) + dh;
+  // Echte Zeit nur fuer die, die zum durchsichtigen Haus gehoeren (und wer verfolgt wird).
+  // Der restliche Verkehr der Stadt laeuft normal weiter.
+  const dhN = dayHours(dtReal), dhR = dtReal * IN_TZ / 3600;
+  const xb = IN.active ? IN.b : -1;
+  realTime = false;
+  AG.sinceRebuild = (AG.sinceRebuild || 0) + dhN;
   if (AG.needRebuild || AG.sinceRebuild > 36) { AG.sinceRebuild = 0; rebuildAgents(); }
   AG.carsOn.fill(0);
   for (const a of AG.list) if (a.state === 1 || a.state === 3) if (a.mode === 2 && a.cell >= 0) AG.carsOn[a.cell]++;
   let cars = 0, walk = 0, metro = 0;
   for (const a of AG.list) {
+    realTime = a === FOLLOW || (xb >= 0 && (a.home === xb || a.dest === xb));
+    const dh = realTime ? dhR : dhN;
     // losgehen, wenn die Aufenthaltszeit vorbei ist
     if (a.state === 0 || a.state === 2) {
       a.wait -= dh;
@@ -1876,7 +1882,7 @@ function tickAgents(dtReal) {
       a.legs = out ? planTrip(a, a.home, a.dest) : planTrip(a, a.dest, a.home); a.seg = 0;
       if (!a.legs) { a.state = 4; continue; }          // kein Weg: bleibt
       const b0 = out ? a.home : a.dest, car0 = a.legs[0].mode === 2;
-      a.next = out ? 1 : 3;
+      a.next = out ? 1 : 3; a.ob = b0; a.ab = b0;
       // im ausgewaehlten Gebaeude: erst durchs Haus (Aufzug, Garage), dann hinaus
       if (S.type[b0] !== T.PARK && insideActive(b0)) { inLeave(a, b0, car0, out ? 0 : a.kind); a.state = 13; continue; }
       leaveOutside(a, b0, car0);
@@ -1910,6 +1916,7 @@ function tickAgents(dtReal) {
       else startLeg(a);
     }
   }
+  realTime = false;
   AG.stats = { cars: cars * AG.groupUsed, walk: walk * AG.groupUsed, metro: metro * AG.groupUsed, dots: cars + walk };
 }
 
@@ -1975,6 +1982,126 @@ function drawAgents() {
 }
 
 function onRoadsChanged() { AG.fields.clear(); AG.acc.clear(); computeNearRoad(); }
+
+// =====================================================================
+//  VERFOLGEN: Mensch oder Auto anklicken -> die Kamera faehrt mit.
+//  Kurz vor und nach einem Haus (und drinnen) wird das Haus durchsichtig.
+// =====================================================================
+let FOLLOW = null;
+function roadPos(a) {
+  const x0 = a.cell % N, z0 = (a.cell / N) | 0;
+  let x = x0 + 0.5, z = z0 + 0.5, dx = 0, dz = 0;
+  if (a.nxt >= 0) { const x1 = a.nxt % N, z1 = (a.nxt / N) | 0; dx = x1 - x0; dz = z1 - z0; x += dx * a.p; z += dz * a.p; }
+  const side = a.mode === 2 ? 0.2 : (a.salt & 1 ? 0.42 : -0.42);
+  x += -dz * side; z += dx * side;
+  return [x - N / 2, a.mode === 2 ? 0.08 : 0.05, z - N / 2];
+}
+// Gebaeude, das gerade durchsichtig sein soll (bei der verfolgten Person)
+function followBuilding(a) {
+  if (!a) return -1;
+  if (a.state === 12 || a.state === 13 || a.state === 20 || a.state === 21) return a.ab;
+  if (a.state === 0) return a.home;
+  if (a.state === 2) return a.dest;
+  if ((a.state === 1 || a.state === 3) && a.legs && a.mode !== 3 && a.cell >= 0) {
+    const last = a.seg === a.legs.length - 1, first = a.seg === 0, L = a.legs[a.seg];
+    if (last && a.field && a.field[a.cell] <= 2) return a.state === 1 ? a.dest : a.home;    // kurz davor
+    if (first && Math.abs(a.cell % N - L.from % N) + Math.abs(((a.cell / N) | 0) - ((L.from / N) | 0)) <= 2) return a.ob ?? -1;  // kurz danach
+  }
+  return -1;
+}
+function agentPos(a) {
+  if (a.state === 12 || a.state === 13) {
+    const p = IN.people.find(q => q.a === a);
+    if (p) return inPersonPos(p);
+  }
+  if ((a.state === 20 || a.state === 21) && a.ap) return apPos(a);
+  if (a.state === 2 && a.stand) return a.stand;
+  if (a.state === 1 || a.state === 3) {
+    if (a.mode === 3 || a.cell < 0) { const L = a.legs[a.seg]; return [L.from % N + 0.5 - N / 2, -0.3, ((L.from / N) | 0) + 0.5 - N / 2]; }
+    return roadPos(a);
+  }
+  // im Haus: in der Wohnung / im Buero
+  const b = a.state === 0 ? a.home : a.dest;
+  if (b >= 0 && IN.active && IN.b === b) { const f = floorFor(a, b, a.state === 0 ? 0 : a.kind), u = unitOf(a, f); return [u[0], fy(f) + 0.05, u[1]]; }
+  if (b >= 0) { const A = accessOf(b); return [A.cx, 0.3, A.cz]; }
+  return null;
+}
+const followDot = makeDots(1, 0.3, 0xffffff, 10, 26);
+followDot.material.depthTest = false; followDot.renderOrder = 12; followDot.visible = false;
+// Klick: naechster Punkt auf dem Bildschirm (Menschen, Autos, auch im Haus)
+function pickAgent(ev) {
+  if (!AG.on) return null;
+  const r = renderer.domElement.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  const v = new THREE.Vector3(); let best = null, bd = (ev.pointerType === "touch" ? 22 : 12) ** 2;
+  const test = (a, q) => {
+    if (!q) return;
+    v.set(q[0], q[1], q[2]).project(camera);
+    if (v.z > 1) return;
+    const sx = (v.x + 1) / 2 * r.width, sy = (1 - v.y) / 2 * r.height, d = (sx - mx) ** 2 + (sy - my) ** 2;
+    if (d < bd) { bd = d; best = a; }
+  };
+  for (const a of AG.list) {
+    if (a.state === 20 || a.state === 21) test(a, apPos(a));
+    else if (a.state === 2 && a.stand) test(a, a.stand);
+    else if ((a.state === 1 || a.state === 3) && a.mode !== 3 && a.cell >= 0) test(a, roadPos(a));
+  }
+  if (IN.active) for (const p of IN.people) if (p.a) test(p.a, inPersonPos(p));
+  return best;
+}
+let followZoom = false;
+function startFollow(a) {
+  FOLLOW = a; followZoom = true; selected = -1; showDetail();
+  $("detail").hidden = false; followUI(true);
+}
+function stopFollow() {
+  if (!FOLLOW) return;
+  FOLLOW = null; followDot.visible = false; $("detail").hidden = true;
+}
+const KIND_NAME = ["nach Hause", "zur Arbeit", "zum Einkaufen", "in den Park"];
+const MODE_NAME = { 1: "zu Fuß", 2: "mit dem Auto", 3: "mit der U-Bahn" };
+const IN_STATE = { 0: "geht zum Aufzug", 1: "wartet auf den Aufzug", 2: "fährt im Aufzug", 3: "geht über den Flur", 5: "nimmt die Treppe", 7: "parkt in der Tiefgarage", 8: "fährt aus der Tiefgarage" };
+let lastFollowUI = 0;
+function followUI(force) {
+  const a = FOLLOW; if (!a) return;
+  const now = performance.now(); if (!force && now - lastFollowUI < 250) return; lastFollowUI = now;
+  const G = AG.groupUsed || 1, rows = [];
+  $("dtitle").textContent = G > 1 ? G + " Menschen (1 Punkt)" : "Ein Mensch";
+  $("dmix").hidden = true; if ($("dmixl")) $("dmixl").remove();
+  const goal = a.kind ? a.kind : 0, homeN = a.home >= 0 ? buildingName(a.home) : "–", destN = a.dest >= 0 ? buildingName(a.dest) : "–";
+  let st;
+  if (a.state === 1 || a.state === 3) st = (a.state === 1 ? KIND_NAME[goal] : "nach Hause") + ", " + (MODE_NAME[a.mode] || "");
+  else if (a.state === 21) st = a.ap && a.ap.car ? "fährt in die Tiefgarage" : "geht zum Eingang";
+  else if (a.state === 20) st = a.ap && a.ap.car ? "fährt aus der Tiefgarage" : "verlässt das Haus";
+  else if (a.state === 12 || a.state === 13) { const p = IN.people.find(q => q.a === a); st = p ? (IN_STATE[p.s] || "im Haus") + (p.s === 2 ? " (Stock " + Math.round(p.f) + ")" : "") : "im Haus"; }
+  else if (a.state === 2) st = (a.kind === 1 ? "bei der Arbeit" : a.kind === 2 ? "beim Einkaufen" : "im Park") + ", noch " + Math.max(1, Math.round(a.wait * 60)) + " min";
+  else if (a.state === 0) st = "zu Hause, noch " + Math.max(1, Math.round(a.wait * 60)) + " min";
+  else st = "kein Weg";
+  rows.push(["Gerade", st]);
+  rows.push(["Wohnt in", homeN]);
+  if (a.kind) rows.push([a.kind === 1 ? "Arbeitet in" : a.kind === 2 ? "Kauft ein in" : "Park", destN]);
+  if (a.home >= 0 && a.dest >= 0) { const f = AG.nearRoad[a.home] >= 0 && AG.nearRoad[a.dest] >= 0 ? fieldTo(AG.nearRoad[a.dest])[AG.nearRoad[a.home]] : 65535; if (f !== 65535) rows.push(["Weg", fmt(f * 16) + " m"]); }
+  rows.push(["Tempo", "echte Zeit × " + IN_TZ * speed]);
+  $("dkv").innerHTML = rows.map(([k, v]) => `<span class="label">${k}</span><span>${v}</span>`).join("") +
+    `<span class="label" style="grid-column:1/-1;color:var(--muted);white-space:normal">Kamera folgt · Ziehen dreht · × oder WASD beendet</span>`;
+}
+function followCamera(dt) {
+  const a = FOLLOW; if (!a) return;
+  if (!AG.list.includes(a)) { stopFollow(); return; }
+  const q = agentPos(a);
+  if (!q) return;
+  followDot.visible = true;
+  const fp = followDot.geometry.attributes.position.array; fp[0] = q[0]; fp[1] = q[1]; fp[2] = q[2];
+  followDot.geometry.setDrawRange(0, 1); followDot.geometry.attributes.position.needsUpdate = true;
+  const t = controls.target, k = 1 - Math.exp(-dt * 6);
+  const d = new THREE.Vector3((q[0] - t.x) * k, (q[1] - t.y) * k, (q[2] - t.z) * k);
+  t.add(d); camera.position.add(d);
+  if (followZoom) {                       // beim Start naeher heranfahren
+    const off = camera.position.clone().sub(t), L = off.length(), want = 4.5;
+    if (Math.abs(L - want) < 0.1) followZoom = false;
+    else camera.position.copy(t).add(off.setLength(L + (want - L) * k * 0.6));
+  }
+  followUI();
+}
 
 // =====================================================================
 //  INNENLEBEN: eine zusammenhaengende Simulation mit den Menschen draussen.
@@ -2114,8 +2241,11 @@ function inDone(p) {
   else leaveOutside(a, IN.b, false);
   p.s = 9;
 }
+let XB = -1;   // Gebaeude, das gerade durchsichtig ist
 function tickInside(dtReal) {
-  const b = selected, active = AG.on && b >= 0 && tool === "cam" && isZone(S.type[b]) && S.lvl[b] > 0;
+  const b = FOLLOW ? followBuilding(FOLLOW) : (tool === "cam" ? selected : -1);
+  const active = AG.on && b >= 0 && isZone(S.type[b]) && S.lvl[b] > 0;
+  XB = active ? b : -1;
   inG.visible = inDots.visible = inCars.visible = active;
   if (!active) { if (IN.active) { flushInside(); IN.active = false; IN.b = -1; IN.key = ""; dirty = true; } return; }
   const key = b + ":" + S.lvl[b] + ":" + S.mw[b] + ":" + S.mh[b];
@@ -2212,6 +2342,12 @@ function tickInside(dtReal) {
   IN.el.forEach((e, k) => put(inCab, k, e.x, fy(e.y) + 0.08, e.z, 0, 0.1, 0.15, 0.1, e.door > 0 ? C(0xffe08a) : C(0xffb21e)));
   inCab.instanceMatrix.needsUpdate = true; inCab.instanceColor.needsUpdate = true;
 }
+function inPersonPos(p) {
+  if (p.s === 7 || p.s === 8) { const u = Math.min(1, p.t); return [p.from[0] + (p.to[0] - p.from[0]) * u, p.from[1] + (p.to[1] - p.from[1]) * u, p.from[2] + (p.to[2] - p.from[2]) * u]; }
+  let x = p.x, z = p.z;
+  if (p.s === 2) { const k = IN.el.indexOf(p.e), e = p.e; x = e.x + ((p.tf * 7 + k) % 3 - 1) * 0.025; z = e.z + ((p.a.id * 3) % 3 - 1) * 0.025; }
+  return [x, fy(p.f) + 0.05, z];
+}
 function insideRows(b) {
   if (!AG.on) return [["Innen", "Menschen-Simulation einschalten"]];
   if (b < 0 || IN.b !== b || !IN.active) return [];
@@ -2236,6 +2372,7 @@ const TOOL_COLOR = { road: 0x888888, ave: 0x555555, R: 0x5fb34e, C: 0x4b7fd8, O:
 
 function setTool(t) {
   tool = t;
+  if (t !== "cam") stopFollow();
   document.querySelectorAll(".tool").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
   controls.mouseButtons = { LEFT: t === "cam" ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
   controls.touches = { ONE: t === "cam" ? THREE.TOUCH.ROTATE : -1, TWO: -1 };   // zwei Finger: eigene Geste (s. unten)
@@ -2530,6 +2667,9 @@ cv.addEventListener("pointermove", e => {
 // Ansehen: kurzer Klick ohne Ziehen waehlt ein Gebaeude aus
 cv.addEventListener("pointerup", e => {
   if (tool !== "cam" || e.button !== 0 || Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
+  const ag = pickAgent(e);
+  if (ag) { startFollow(ag); return; }
+  stopFollow();
   const i = cellAt(e);
   selected = i < 0 ? -1 : (S.merge[i] >= 0 ? S.merge[i] : i);
   if (selected >= 0 && (S.type[selected] === T.EMPTY || S.type[selected] === T.ROAD)) selected = -1;
@@ -2552,6 +2692,7 @@ addEventListener("keydown", e => {
   if (m) setTool(m);
   if (e.key === " ") { e.preventDefault(); setSpeed(speed === 0 ? 1 : 0); }
   if (e.key === "m" || e.key === "M") setCollapsed(!$("stats").classList.contains("collapsed"));
+  if (e.key === "Escape" || /^(w|a|s|d|arrow)/i.test(e.key)) stopFollow();   // selbst steuern beendet das Folgen
   keys.add(e.key.toLowerCase());
 });
 addEventListener("keyup", e => { keys.delete(e.key.toLowerCase()); if (e.key === "Meta" || e.key === "Control") keys.clear(); });
@@ -2590,7 +2731,7 @@ function panKeys(dt) {
 }
 
 let selected = -1;
-$("dclose").addEventListener("click", () => { selected = -1; showDetail(); });
+$("dclose").addEventListener("click", () => { stopFollow(); selected = -1; showDetail(); });
 function buildingName(b) {
   const t = S.type[b], u = useOf(b);
   if (t === T.PARK) return "Park";
@@ -2785,6 +2926,7 @@ function loop(now) {
   tickAgents(dt * speed);
   drawAgents();
   tickInside(dt);
+  followCamera(dt);
   if (uiDirty || ((now / 250) | 0) !== lastAgUI) { lastAgUI = (now / 250) | 0; updateAgentUI(); }
   if (miniEnv.visible) { wuerfel.rotation.y += dt * 0.15; wuerfel.position.y = 7 + Math.sin(now / 1800) * 0.3; }
   panKeys(dt);
