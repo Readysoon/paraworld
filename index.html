@@ -1608,6 +1608,7 @@ const SPEED = { car: 26, walk: 7, metro: 70 };   // Felder pro Spielstunde
 // Gebaeude angeklickt: Menschen laufen in echter Zeit (im Zeitraffer), damit drinnen und draussen zusammenpassen
 const SPEED_REAL = { car: 1875, walk: 300, metro: 2800 };   // 30 km/h, 4,8 km/h, 45 km/h in Feldern pro Stunde
 const LOCAL_REAL = { car: 600, walk: 300 };
+const WAIT_FAST = 8;           // in echter Zeit: Aufenthalte 8x kuerzer, damit am Haus etwas los ist
 let realTime = false;
 const SP = () => realTime ? SPEED_REAL : SPEED;
 
@@ -1876,7 +1877,7 @@ function tickAgents(dtReal) {
     const dh = realTime ? dhR : dhN;
     // losgehen, wenn die Aufenthaltszeit vorbei ist
     if (a.state === 0 || a.state === 2) {
-      a.wait -= dh;
+      a.wait -= realTime ? dh * WAIT_FAST : dh;      // Aufenthalt im Zeitraffer, sonst kommt kaum jemand
       if (a.wait > 0) continue;
       const out = a.state === 0;
       a.legs = out ? planTrip(a, a.home, a.dest) : planTrip(a, a.dest, a.home); a.seg = 0;
@@ -1932,9 +1933,14 @@ const DOT = dotTexture();
 function makeDots(cap, worldSize, color, minPx, maxPx) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(cap * 3), 3));
+  // Farbe je Punkt (z. B. braun fuer alle, die zum angeklickten Haus gehoeren)
+  const base = new THREE.Color(color), ca = new Float32Array(cap * 3);
+  for (let k = 0; k < cap; k++) { ca[k * 3] = base.r; ca[k * 3 + 1] = base.g; ca[k * 3 + 2] = base.b; }
+  geo.setAttribute("color", new THREE.BufferAttribute(ca, 3));
+  geo.userData.base = base;
   geo.setDrawRange(0, 0);
   const size = worldSize / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-  const mat = new THREE.PointsMaterial({ size, map: DOT, color, alphaTest: 0.5, sizeAttenuation: true, depthWrite: true });
+  const mat = new THREE.PointsMaterial({ size, map: DOT, color: 0xffffff, vertexColors: true, alphaTest: 0.5, sizeAttenuation: true, depthWrite: true });
   const dpr = renderer.getPixelRatio();
   mat.onBeforeCompile = sh => {
     sh.vertexShader = sh.vertexShader.replace("#include <fog_vertex>",
@@ -1945,6 +1951,8 @@ function makeDots(cap, worldSize, color, minPx, maxPx) {
   scene.add(pts);
   return pts;
 }
+// Braun: alle, die zum angeklickten Haus gehoeren (kommen, gehen, drinnen)
+const BROWN = new THREE.Color(0x7a4a1e), BROWN_CAR = new THREE.Color(0xa86a32);
 const carDots = makeDots(AG.maxAgents, 0.28, 0xffb21e, 3.5, 22);   // Auto ca. 4,5 m
 const walkDots = makeDots(AG.maxAgents, 0.12, 0x2f6bff, 2.4, 10);   // Mensch ca. 2 m (als Punkt)
 
@@ -1954,13 +1962,17 @@ function drawAgents() {
   if (!show) return;
   const half = N / 2;
   const cp = carDots.geometry.attributes.position.array, wp = walkDots.geometry.attributes.position.array;
+  const cc = carDots.geometry.attributes.color.array, wc = walkDots.geometry.attributes.color.array;
+  const cb = carDots.geometry.userData.base, wb = walkDots.geometry.userData.base;
+  const xb = typeof IN !== "undefined" && IN.active ? IN.b : -1;
+  const col = (arr, n, rel, b0, br) => { const c = rel ? br : b0; arr[n * 3] = c.r; arr[n * 3 + 1] = c.g; arr[n * 3 + 2] = c.b; };
   let nc = 0, nw = 0;
   for (const a of AG.list) {
     if (a.state === 20 || a.state === 21 || (a.state === 2 && a.stand)) {
       if (nc + nw >= AG.maxAgents) continue;
-      const q = a.ap ? apPos(a) : a.stand;
-      if (a.ap && a.ap.car) { cp[nc * 3] = q[0]; cp[nc * 3 + 1] = q[1]; cp[nc * 3 + 2] = q[2]; nc++; }
-      else { wp[nw * 3] = q[0]; wp[nw * 3 + 1] = q[1]; wp[nw * 3 + 2] = q[2]; nw++; }
+      const q = a.ap ? apPos(a) : a.stand, rel = xb >= 0 && (a.home === xb || a.dest === xb);
+      if (a.ap && a.ap.car) { col(cc, nc, rel, cb, BROWN_CAR); cp[nc * 3] = q[0]; cp[nc * 3 + 1] = q[1]; cp[nc * 3 + 2] = q[2]; nc++; }
+      else { col(wc, nw, rel, wb, BROWN); wp[nw * 3] = q[0]; wp[nw * 3 + 1] = q[1]; wp[nw * 3 + 2] = q[2]; nw++; }
       continue;
     }
     if ((a.state !== 1 && a.state !== 3) || a.mode === 3 || a.cell < 0) continue;
@@ -1974,10 +1986,12 @@ function drawAgents() {
     // rechts fahren / am Gehsteig gehen
     const side = a.mode === 2 ? 0.2 : (a.salt & 1 ? 0.42 : -0.42);
     x += -dz * side; z += dx * side;
-    if (a.mode === 2) { cp[nc * 3] = x - half; cp[nc * 3 + 1] = 0.08; cp[nc * 3 + 2] = z - half; nc++; }
-    else { wp[nw * 3] = x - half; wp[nw * 3 + 1] = 0.05; wp[nw * 3 + 2] = z - half; nw++; }
+    const rel = xb >= 0 && (a.home === xb || a.dest === xb);
+    if (a.mode === 2) { col(cc, nc, rel, cb, BROWN_CAR); cp[nc * 3] = x - half; cp[nc * 3 + 1] = 0.08; cp[nc * 3 + 2] = z - half; nc++; }
+    else { col(wc, nw, rel, wb, BROWN); wp[nw * 3] = x - half; wp[nw * 3 + 1] = 0.05; wp[nw * 3 + 2] = z - half; nw++; }
   }
-  carDots.geometry.setDrawRange(0, nc); carDots.geometry.attributes.position.needsUpdate = true;
+  carDots.geometry.setDrawRange(0, nc); carDots.geometry.attributes.position.needsUpdate = true; carDots.geometry.attributes.color.needsUpdate = true;
+  walkDots.geometry.attributes.color.needsUpdate = true;
   walkDots.geometry.setDrawRange(0, nw); walkDots.geometry.attributes.position.needsUpdate = true;
 }
 
@@ -2048,14 +2062,18 @@ function pickAgent(ev) {
   if (IN.active) for (const p of IN.people) if (p.a) test(p.a, inPersonPos(p));
   return best;
 }
-let followZoom = false;
+let followZoom = false, followY = 0, speedBeforeFollow = null;
 function startFollow(a) {
+  if (!FOLLOW) { speedBeforeFollow = speed; setSpeed(0.5); }   // sofort verlangsamen
   FOLLOW = a; followZoom = true; selected = -1; showDetail();
   $("detail").hidden = false; followUI(true);
 }
 function stopFollow() {
   if (!FOLLOW) return;
-  FOLLOW = null; followDot.visible = false; $("detail").hidden = true;
+  camera.position.y -= followY; followY = 0;      // Kamera wieder auf den Boden beziehen
+  FOLLOW = null;
+  if (speedBeforeFollow !== null && speed === 0.5) setSpeed(speedBeforeFollow);
+  speedBeforeFollow = null; followDot.visible = false; $("detail").hidden = true;
 }
 const KIND_NAME = ["nach Hause", "zur Arbeit", "zum Einkaufen", "in den Park"];
 const MODE_NAME = { 1: "zu Fuß", 2: "mit dem Auto", 3: "mit der U-Bahn" };
@@ -2092,9 +2110,13 @@ function followCamera(dt) {
   followDot.visible = true;
   const fp = followDot.geometry.attributes.position.array; fp[0] = q[0]; fp[1] = q[1]; fp[2] = q[2];
   followDot.geometry.setDrawRange(0, 1); followDot.geometry.attributes.position.needsUpdate = true;
+  // nur waagrecht mitfahren; die Hoehe laeuft getrennt (followY), damit groundCam nicht dagegen arbeitet
   const t = controls.target, k = 1 - Math.exp(-dt * 6);
-  const d = new THREE.Vector3((q[0] - t.x) * k, (q[1] - t.y) * k, (q[2] - t.z) * k);
-  t.add(d); camera.position.add(d);
+  const dx = (q[0] - t.x) * k, dz = (q[2] - t.z) * k;
+  const ny = followY + (Math.max(-1.5, q[1]) - followY) * k, dy = ny - followY;
+  followY = ny;
+  t.x += dx; t.z += dz; t.y += dy;
+  camera.position.x += dx; camera.position.z += dz; camera.position.y += dy;
   if (followZoom) {                       // beim Start naeher heranfahren
     const off = camera.position.clone().sub(t), L = off.length(), want = 4.5;
     if (Math.abs(L - want) < 0.1) followZoom = false;
@@ -2140,8 +2162,8 @@ const inGhost = new THREE.Mesh(box, new THREE.MeshStandardMaterial({ color: 0xdd
 const inGhostE = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0x9fb4cc, transparent: true, opacity: 0.6 }));
 inG.add(inGhost, inGhostE);
 for (const o of [inFloorL, inGarL, inPathL, inShaftL, inCab]) { o.renderOrder = 10; o.frustumCulled = false; inG.add(o); }
-const inDots = makeDots(IN_MAXP, 0.09, 0xff3d7f, 3, 9);        // Menschen im Haus
-const inCars = makeDots(IN_MAXP, 0.2, 0xffb21e, 3.5, 14);      // Autos in der Tiefgarage
+const inDots = makeDots(IN_MAXP, 0.09, 0x7a4a1e, 3, 9);        // Menschen im Haus (braun)
+const inCars = makeDots(IN_MAXP, 0.2, 0xa86a32, 3.5, 14);      // Autos in der Tiefgarage (braun)
 for (const d of [inDots, inCars]) { d.material.depthTest = false; d.renderOrder = 11; d.visible = false; }
 
 // Wer gerade drinnen unterwegs ist, wird beim Wechsel sauber nach draussen/an sein Ziel gesetzt
@@ -2553,7 +2575,8 @@ function groundCam() {
     else { lookUp -= a; c.y = GROUND; }
   }
   lookUp = clamp(lookUp, 0, 1.2);   // bis ca. 70 Grad nach oben
-  t.y = lookUp > 0 ? GROUND + hd * Math.tan(lookUp) : 0;
+  // beim Verfolgen schaut die Kamera auf die Hoehe der Person (Aufzug, Garage)
+  t.y = lookUp > 0 ? GROUND + hd * Math.tan(lookUp) + followY : followY;
   camera.lookAt(t);
 }
 // Kamera neigen: von oben bis auf den Boden
@@ -2701,7 +2724,7 @@ document.addEventListener("visibilitychange", () => keys.clear());
 // Kamera bleibt immer ueber dem Spielfeld
 function clampTarget() {
   const lim = N / 2 + 4, t = controls.target;
-  const cx = clamp(t.x, -lim, lim), cz = clamp(t.z, -lim, lim), cy = clamp(t.y, 0, 60);
+  const cx = clamp(t.x, -lim, lim), cz = clamp(t.z, -lim, lim), cy = clamp(t.y, FOLLOW ? -2 : 0, 60);
   if (cx !== t.x || cz !== t.z || cy !== t.y) {
     const d = new THREE.Vector3(cx - t.x, cy - t.y, cz - t.z);
     t.add(d); camera.position.add(d);
