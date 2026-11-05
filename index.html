@@ -2106,7 +2106,7 @@ function followCamera(dt) {
   const a = FOLLOW; if (!a) return;
   if (!AG.list.includes(a)) { stopFollow(); return; }
   const q = agentPos(a);
-  if (!q) return;
+  if (!q || !Number.isFinite(q[0]) || !Number.isFinite(q[1]) || !Number.isFinite(q[2])) return;
   followDot.visible = true;
   const fp = followDot.geometry.attributes.position.array; fp[0] = q[0]; fp[1] = q[1]; fp[2] = q[2];
   followDot.geometry.setDrawRange(0, 1); followDot.geometry.attributes.position.needsUpdate = true;
@@ -2117,9 +2117,13 @@ function followCamera(dt) {
   followY = ny;
   t.x += dx; t.z += dz; t.y += dy;
   camera.position.x += dx; camera.position.z += dz; camera.position.y += dy;
+  // Sicherheitsnetz: nie weiter als 40 Felder weg, nie unter die Erde
+  { const off = camera.position.clone().sub(t);
+    if (!Number.isFinite(off.length()) || off.length() > 40) { camera.position.copy(t).add(new THREE.Vector3(3, 2.5, 3)); followZoom = true; }
+    if (camera.position.y < t.y + 0.15) camera.position.y = t.y + 0.15; }
   if (followZoom) {                       // beim Start naeher heranfahren
     const off = camera.position.clone().sub(t), L = off.length(), want = 4.5;
-    if (Math.abs(L - want) < 0.1) followZoom = false;
+    if (Math.abs(L - want) < 0.1 || L < want) followZoom = false;   // nur heranfahren, nie wegzoomen
     else camera.position.copy(t).add(off.setLength(L + (want - L) * k * 0.6));
   }
   followUI();
@@ -2955,7 +2959,7 @@ function loop(now) {
   panKeys(dt);
   clampTarget();
   controls.update();
-  groundCam();
+  if (FOLLOW) { lookUp = 0; camera.lookAt(controls.target); } else groundCam();   // beim Folgen keine Boden-Korrektur
   renderer.render(scene, camera);
   requestAnimationFrame(loop);
 }
