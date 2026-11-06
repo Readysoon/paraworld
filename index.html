@@ -2065,7 +2065,7 @@ function pickAgent(ev) {
 let followZoom = false, followY = 0, speedBeforeFollow = null;
 function startFollow(a) {
   if (!FOLLOW) { speedBeforeFollow = speed; setSpeed(0.5); }   // sofort verlangsamen
-  FOLLOW = a; followZoom = true; selected = -1; showDetail();
+  FOLLOW = a; selected = -1; showDetail();
   $("detail").hidden = false; followUI(true);
 }
 function stopFollow() {
@@ -2117,15 +2117,6 @@ function followCamera(dt) {
   followY = ny;
   t.x += dx; t.z += dz; t.y += dy;
   camera.position.x += dx; camera.position.z += dz; camera.position.y += dy;
-  // Sicherheitsnetz: nie weiter als 40 Felder weg, nie unter die Erde
-  { const off = camera.position.clone().sub(t);
-    if (!Number.isFinite(off.length()) || off.length() > 40) { camera.position.copy(t).add(new THREE.Vector3(3, 2.5, 3)); followZoom = true; }
-    if (camera.position.y < t.y + 0.15) camera.position.y = t.y + 0.15; }
-  if (followZoom) {                       // beim Start naeher heranfahren
-    const off = camera.position.clone().sub(t), L = off.length(), want = 4.5;
-    if (Math.abs(L - want) < 0.1 || L < want) followZoom = false;   // nur heranfahren, nie wegzoomen
-    else camera.position.copy(t).add(off.setLength(L + (want - L) * k * 0.6));
-  }
   followUI();
 }
 
