@@ -1805,9 +1805,9 @@ function accessOf(b) {
   return A;
 }
 const LOCAL = { car: 3, walk: 1.6 };      // Felder pro Spielstunde auf dem Grundstueck (gut sichtbar)
-function setAp(a, pts, car, done) {
+function setAp(a, pts, car, done, far) {
   let len = 0; for (let k = 1; k < pts.length; k++) len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][2] - pts[k - 1][2]);
-  a.ap = { pts, car, done, t: 0, len: Math.max(len, 0.05) };
+  a.ap = { pts, car, done, far, t: 0, len: Math.max(len, 0.05) };
 }
 function apPos(a) {
   const ap = a.ap; let d = ap.t;
@@ -1823,24 +1823,76 @@ function standPoint(a, b) {
   const half = N / 2, x = b % N, z = (b / N) | 0;
   return [x + 0.2 + hash(a.id, 41) * 0.6 - half, 0.05, z + 0.2 + hash(a.id, 42) * 0.6 - half];
 }
+// ---------- Parks: zu Fuss entlang der Wege, nie uebers Wasser ----------
+const parkOk = c => S.type[c] === T.PARK && !isParkWater(c % N, (c / N) | 0);
+// gibt es einen Weg zwischen zwei benachbarten Parkfeldern? (gleiche Regel wie beim Zeichnen)
+const parkEdge = (i, j) => hash(Math.min(i, j) * 2 + (Math.abs(i - j) === 1 ? 1 : 0), 31) <= S.parkPaths;
+const NB4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+function parkBFS(start, ok, stop) {
+  const prev = new Map([[start, -1]]), q = [start];
+  for (let h = 0; h < q.length; h++) {
+    const c = q[h];
+    if (stop(c)) { const path = []; for (let k = c; k !== -1; k = prev.get(k)) path.push(k); return path.reverse(); }
+    const x = c % N, z = (c / N) | 0;
+    for (const [dx, dz] of NB4) {
+      const nx = x + dx, nz = z + dz; if (!inside(nx, nz)) continue;
+      const j = idx(nx, nz);
+      if (prev.has(j) || !ok(c, j)) continue;
+      prev.set(j, c); q.push(j);
+    }
+  }
+  return null;
+}
+// Route vom Gehsteig zum Platzerl im Park: naechster Parkeingang, dann ueber die Wege
+function parkRoute(a, b) {
+  const half = N / 2;
+  // Ziel: das Feld selbst, oder (falls Teich) das naechste trockene Feld
+  const tPath = parkOk(b) ? [b] : parkBFS(b, (c, j) => S.type[j] === T.PARK, parkOk);
+  const t = tPath ? tPath[tPath.length - 1] : b;
+  // Eingang: naechstes trockenes Parkfeld an einer Strasse
+  const roadNext = c => { const x = c % N, z = (c / N) | 0; for (const [dx, dz] of NB4) if (inside(x + dx, z + dz) && S.type[idx(x + dx, z + dz)] === T.ROAD) return idx(x + dx, z + dz); return -1; };
+  const ePath = parkBFS(t, (c, j) => parkOk(j), c => roadNext(c) >= 0) || [t];
+  const entry = ePath[ePath.length - 1];
+  let rc = roadNext(entry); if (rc < 0) rc = AG.nearRoad[b] >= 0 ? AG.nearRoad[b] : entry;
+  // Weg vom Eingang zum Ziel: bevorzugt ueber die Parkwege
+  const route = parkBFS(entry, (c, j) => parkOk(j) && parkEdge(c, j), c => c === t) || ePath.slice().reverse();
+  const node = c => { const [x, z] = parkNode(c % N, (c / N) | 0); return [x - half, 0.05, z - half]; };
+  const ex = entry % N, ez = (entry / N) | 0, rx = rc % N, rz = (rc / N) | 0, dx = ex - rx, dz = ez - rz;
+  const cx = rx + 0.5 - half, cz = rz + 0.5 - half;
+  const Sp = [cx + dx * 0.42, 0.05, cz + dz * 0.42];          // Gehsteig am Parkeingang
+  const Rd = [cx + dx * 0.2 - dz * 0.25, 0.08, cz + dz * 0.2 + dx * 0.25];     // Fahrspur
+  const Rdown = [Rd[0] - dz * 0.25, -0.12, Rd[2] + dx * 0.25];                // Tiefgarage unter der Strasse
+  const last = node(t), ang = hash(a.id, 43) * 6.283, r = 0.08 + hash(a.id, 44) * 0.08;
+  const stand = [last[0] + Math.cos(ang) * r, 0.05, last[2] + Math.sin(ang) * r];
+  return { S: Sp, Rd, Rdown, pts: route.map(node), stand };
+}
 // Ende der letzten Etappe: zu Fuss zum Eingang, mit dem Auto in die Tiefgarage
 function reachDest(a) {
   const out = a.state === 1, b = out ? a.dest : a.home, A = accessOf(b), car = a.mode === 2;
   a.ab = b; a.arr = a.state; a.car = car;
   const park = S.type[b] === T.PARK;
-  if (car) setAp(a, [A.Rd, A.Rm, A.Rin], true, 1);
-  else setAp(a, [A.S, park ? standPoint(a, b) : A.E], false, 1);
+  if (park) {
+    const R = a.pr = parkRoute(a, b);
+    if (car) setAp(a, [R.Rd, R.Rdown], true, 3);              // Auto in die Garage unter der Strasse
+    else setAp(a, [R.S, ...R.pts, R.stand], false, 1, true);   // ueber die Parkwege
+  } else if (car) setAp(a, [A.Rd, A.Rm, A.Rin], true, 1);
+  else setAp(a, [A.S, A.E], false, 1);
   a.state = 21;
 }
 function finishArrive(a) {
   a.state = a.arr; arrive(a);
   a.pk = a.car ? a.ab : -1;
-  if (S.type[a.ab] === T.PARK && !a.car) a.stand = a.ap.pts[a.ap.pts.length - 1];
-  else if (S.type[a.ab] === T.PARK) a.stand = standPoint(a, a.ab);
+  if (S.type[a.ab] === T.PARK) a.stand = a.ap.pts[a.ap.pts.length - 1];
   a.ap = null;
 }
 // Gebaeude verlassen: zu Fuss vom Eingang, mit dem Auto aus der Tiefgarage
 function leaveOutside(a, b, car) {
+  if (S.type[b] === T.PARK) {                 // zurueck ueber die Parkwege, dann evtl. zum Auto
+    const R = a.pr || parkRoute(a, b);
+    setAp(a, [a.stand || R.stand, ...R.pts.slice().reverse(), R.S], false, car ? 4 : 2, true);
+    a.pr = R; a.stand = null; a.state = 20; a.lcar = car;
+    return;
+  }
   const A = accessOf(b), from = a.stand || A.E;
   a.stand = null;
   if (car) { setAp(a, [A.Rin, A.Rm, A.Rd], true, 2); a.pk = -1; }
@@ -1849,9 +1901,12 @@ function leaveOutside(a, b, car) {
 }
 function tickAp(a, dh) {
   const LS = realTime ? LOCAL_REAL : LOCAL;
-  a.ap.t += dh * (a.ap.car ? LS.car : LS.walk);
+  // laengere Wege durch den Park: normales Gehtempo
+  a.ap.t += dh * (a.ap.car ? LS.car : a.ap.far ? SP().walk : LS.walk);
   if (a.ap.t < a.ap.len) return;
   if (a.ap.done === 2) { a.ap = null; a.state = a.next; startLeg(a); return; }
+  if (a.ap.done === 3) { const R = a.pr; setAp(a, [R.S, ...R.pts, R.stand], false, 1, true); return; }   // geparkt, jetzt zu Fuss
+  if (a.ap.done === 4) { const R = a.pr; setAp(a, [R.Rdown, R.Rd], true, 2); a.pk = -1; return; }        // zurueck zum Auto
   // angekommen an Tuer oder Garage
   if (S.type[a.ab] !== T.PARK && insideActive(a.ab)) { inEnter(a); return; }
   finishArrive(a);
@@ -2043,12 +2098,37 @@ function agentPos(a) {
 const followDot = makeDots(1, 0.3, 0xffffff, 10, 26);
 followDot.material.depthTest = false; followDot.renderOrder = 12; followDot.visible = false;
 // Klick: naechster Punkt auf dem Bildschirm (Menschen, Autos, auch im Haus)
-function pickAgent(ev) {
+// Gebaeude unter dem Mauszeiger: Strahl gegen die Gebaeude-Kisten (auch Fassaden, nicht nur Boden)
+function pickBuilding(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const o = ray.ray.origin, d = ray.ray.direction, half = N / 2;
+  let best = -1, bt = Infinity;
+  for (let i = 0; i < N * N; i++) {
+    if (!isZone(S.type[i]) || isPart(i) || S.lvl[i] === 0) continue;
+    const an = isAnchor(i), w = an ? S.mw[i] : 1, h = an ? S.mh[i] : 1;
+    const x0 = i % N - half + 0.05, z0 = ((i / N) | 0) - half + 0.05, x1 = x0 + w - 0.1, z1 = z0 + h - 0.1;
+    const y1 = Math.max(0.15, S.lvl[i] * FH);
+    let tmin = 0, tmax = Infinity, ok = true;
+    for (const [oo, dd, lo, hi] of [[o.x, d.x, x0, x1], [o.y, d.y, 0, y1], [o.z, d.z, z0, z1]]) {
+      if (Math.abs(dd) < 1e-9) { if (oo < lo || oo > hi) { ok = false; break; } continue; }
+      let ta = (lo - oo) / dd, tb = (hi - oo) / dd; if (ta > tb) [ta, tb] = [tb, ta];
+      tmin = Math.max(tmin, ta); tmax = Math.min(tmax, tb); if (tmin > tmax) { ok = false; break; }
+    }
+    if (ok && tmin < bt) { bt = tmin; best = i; }
+  }
+  return { b: best, t: bt };
+}
+// Mensch/Auto nur, wenn man ziemlich genau trifft und kein Haus davor steht
+function pickAgent(ev, hitT = Infinity) {
   if (!AG.on) return null;
   const r = renderer.domElement.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
-  const v = new THREE.Vector3(); let best = null, bd = (ev.pointerType === "touch" ? 22 : 12) ** 2;
-  const test = (a, q) => {
+  const v = new THREE.Vector3(); let best = null, bd = (ev.pointerType === "touch" ? 14 : 7) ** 2;
+  const cam = camera.position;
+  const test = (a, q, inside) => {
     if (!q) return;
+    if (!inside && Math.hypot(q[0] - cam.x, q[1] - cam.y, q[2] - cam.z) > hitT + 0.2) return;   // hinter einem Haus
     v.set(q[0], q[1], q[2]).project(camera);
     if (v.z > 1) return;
     const sx = (v.x + 1) / 2 * r.width, sy = (1 - v.y) / 2 * r.height, d = (sx - mx) ** 2 + (sy - my) ** 2;
@@ -2059,7 +2139,7 @@ function pickAgent(ev) {
     else if (a.state === 2 && a.stand) test(a, a.stand);
     else if ((a.state === 1 || a.state === 3) && a.mode !== 3 && a.cell >= 0) test(a, roadPos(a));
   }
-  if (IN.active) for (const p of IN.people) if (p.a) test(p.a, inPersonPos(p));
+  if (IN.active) for (const p of IN.people) if (p.a) test(p.a, inPersonPos(p), true);
   return best;
 }
 let followZoom = false, followY = 0, speedBeforeFollow = null;
@@ -2685,10 +2765,11 @@ cv.addEventListener("pointermove", e => {
 // Ansehen: kurzer Klick ohne Ziehen waehlt ein Gebaeude aus
 cv.addEventListener("pointerup", e => {
   if (tool !== "cam" || e.button !== 0 || Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
-  const ag = pickAgent(e);
+  const hit = pickBuilding(e);
+  const ag = pickAgent(e, hit.t);
   if (ag) { startFollow(ag); return; }
   stopFollow();
-  const i = cellAt(e);
+  const i = hit.b >= 0 ? hit.b : cellAt(e);
   selected = i < 0 ? -1 : (S.merge[i] >= 0 ? S.merge[i] : i);
   if (selected >= 0 && (S.type[selected] === T.EMPTY || S.type[selected] === T.ROAD)) selected = -1;
   showDetail();
