@@ -175,6 +175,9 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
     <label for="tax" class="label" style="color:var(--muted)">Steuer <b id="taxv" style="color:var(--paper);font-family:var(--font-mono)">10 %</b></label>
     <input id="tax" type="range" min="0" max="25" step="1" value="10">
   </div>
+  <div class="sect row">
+    <label for="eco" style="color:var(--muted)"><input type="checkbox" id="eco"> Sparmodus <span style="font-size:12px">(kühler, 30 Bilder/s)</span></label>
+  </div>
   <div class="sect">
     <h2>Menschen</h2>
     <div class="row"><label for="agOn" style="color:var(--muted)"><input type="checkbox" id="agOn" checked> zeigen</label>
@@ -936,6 +939,8 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.autoUpdate = false;        // Schatten nur neu rechnen, wenn sich Gebaeude aendern (spart viel)
+renderer.shadowMap.needsUpdate = true;
 renderer.outputEncoding = THREE.sRGBEncoding;
 view.appendChild(renderer.domElement);
 
@@ -1580,6 +1585,7 @@ function build() {
     m.instanceColor.needsUpdate = true;
   }
   centerG.position.set(S.cx - half, 0, S.cz - half);
+  renderer.shadowMap.needsUpdate = true;   // Schatten passend zu den neuen Gebaeuden
   if (grew) build();
 }
 
@@ -3009,7 +3015,26 @@ addEventListener("resize", () => {
 // =====================================================================
 const TICK = 0.25;            // Monat = 2 s bei 1x
 let acc = 0, ticks = 0, lastBuild = 0, prev = performance.now(), lastAgUI = 0;
+// ---------- Sparmodus: weniger Bilder, weniger Pixel, kleinere Schatten ----------
+// Standard: an, wenn das Spiel eingebettet laeuft (z. B. in der Claude-App) oder auf dem Handy
+let ECO = false;
+try { const v = localStorage.getItem("pw-eco"); ECO = v === null ? (window.self !== window.top || matchMedia("(pointer: coarse)").matches) : v === "1"; } catch (e) { ECO = window.self !== window.top; }
+function applyEco() {
+  renderer.setPixelRatio(Math.min(devicePixelRatio, ECO ? 1 : 1.5));
+  renderer.setSize(innerWidth, innerHeight, false);
+  sun.shadow.mapSize.set(ECO ? 2048 : 4096, ECO ? 2048 : 4096);
+  if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  renderer.shadowMap.needsUpdate = true;
+  $("eco").checked = ECO;
+}
+$("eco").addEventListener("change", e => { ECO = e.target.checked; try { localStorage.setItem("pw-eco", ECO ? "1" : "0"); } catch (er) {} applyEco(); });
+applyEco();
+let lastFrame = 0;
 function loop(now) {
+  // Bildrate begrenzen: Sparmodus 30, sonst 60 Bilder pro Sekunde
+  const minGap = ECO ? 1000 / 30 - 2 : 1000 / 60 - 2;
+  if (now - lastFrame < minGap || document.hidden) { requestAnimationFrame(loop); return; }
+  lastFrame = now;
   const dt = Math.min(0.1, (now - prev) / 1000); prev = now;
   acc += dt * speed;
   let uiDirty = false;
@@ -3021,7 +3046,7 @@ function loop(now) {
     if (ticks % TICKS_PER_MONTH === 0) { monthTick(); if (S.month % 3 === 0) save(); }
   }
   if (uiDirty) { updateUI(); if (selected >= 0) { if (S.merge[selected] >= 0 && S.merge[selected] !== selected) selected = S.merge[selected]; showDetail(); } }
-  if (dirty && now - lastBuild > 120) { build(); dirty = false; lastBuild = now; }
+  if (dirty && now - lastBuild > 120) { build(); dirty = false; lastBuild = now; renderer.shadowMap.needsUpdate = true; }
   tickAgents(dt * speed);
   drawAgents();
   tickInside(dt);
