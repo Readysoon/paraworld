@@ -216,6 +216,7 @@ input[type=range] { flex: 1 1 90px; min-width: 70px; max-width: 140px; width: au
   <select id="world" aria-label="Welt wechseln">
     <option value="spiral">Spiralstadt</option>
     <option value="mini">Miniverse</option>
+    <option value="anem">Anemonenstadt</option>
   </select>
 </div>
 
@@ -533,7 +534,7 @@ function computeParkBoost() {
 function heightLimit() {
   // Extrem: bis 200 Stockwerke (wie Blender: Stockwerke Mitte 201)
   const p = clamp((S.st.pop || 0) / 3500, 0, 1);
-  const worldScale = WORLD === "mini" ? 0.28 : 1;
+  const worldScale = WORLD === "mini" ? 0.28 : WORLD === "anem" ? 0.4 : 1;
   return Math.round(3 + (67 + 133 * S.extreme) * worldScale * Math.pow(p, 0.6) * clamp(S.st.econ || 0, 0, 1));
 }
 // Mindesthoehe im Hochhaus-Bereich (Blender: Stockwerke Rand 14)
@@ -923,8 +924,8 @@ function load(o) {
 }
 // Zwei Welten mit gleicher Mechanik, eigener Stadt und eigenem Aussehen
 let WORLD = "spiral";
-try { WORLD = localStorage.getItem("pw-world") === "mini" ? "mini" : "spiral"; } catch (e) {}
-const saveKey = () => WORLD === "mini" ? "miniverse1" : "spiralstadt4";
+try { const w = localStorage.getItem("pw-world"); WORLD = w === "mini" || w === "anem" ? w : "spiral"; } catch (e) {}
+const saveKey = () => WORLD === "mini" ? "miniverse1" : WORLD === "anem" ? "anemonen1" : "spiralstadt4";
 function save() { try { localStorage.setItem(saveKey(), JSON.stringify(serialize())); } catch (e) {} }
 
 // =====================================================================
@@ -1080,6 +1081,94 @@ function styleField(name, x, z) {
   return clamp(0.5 + w / 3, 0, 1);
 }
 
+// ---------- Anemonenstadt: gebogene, hohle Roehren mit gewelltem Rand ----------
+// nach dem Wandbild "Anemonen Stroemung": eine Welle laeuft schraeg durch die Stadt,
+// am Kamm stehen die Roehren aufrecht, an den Flanken neigen sie sich zum Kamm.
+const AN_ROAD = new THREE.Color(0xb7a9a9);
+const AN_COLORS = [0xF4E3D3, 0xF2A38B, 0xE0607A, 0x8E2E5C].map(c => new THREE.Color(c));   // Sand, Lachs, Koralle, Beere
+const AN_PLATE = AN_COLORS.map(c => c.clone().lerp(new THREE.Color(0xffffff), 0.18));
+const AN_INNER = AN_COLORS.map(c => c.clone().multiplyScalar(0.42));
+const matAn = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, side: THREE.DoubleSide });
+const anSegM = makeInst(new THREE.CylinderGeometry(1, 1, 1, 18, 1, true), matAn, 60000);
+const anInM = makeInst(new THREE.CircleGeometry(1, 18).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }), 20000, false);
+// Rand mit Tentakel-Wellen (k Wellen rundherum), Hoehe 1 = Wellenhoehe
+function crownGeo(k) {
+  const SEG = 48, pos = [], ind = [];
+  for (let i = 0; i <= SEG; i++) {
+    const th = 2 * Math.PI * i / SEG, x = Math.cos(th), z = Math.sin(th);
+    const h = (0.5 + 0.5 * Math.sin(k * th)) * (1 + 0.6 * x);
+    pos.push(x, 0, z, x, h, z);
+  }
+  for (let i = 0; i < SEG; i++) { const a = i * 2; ind.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(ind); g.computeVertexNormals();
+  return g;
+}
+const anCrownM = [6, 7, 8].map(k => makeInst(crownGeo(k), matAn, 12000));
+const _bm = new THREE.Matrix4();
+// Instanz mit freier Ausrichtung: Achsen x, y, z (schon skaliert)
+function putBasis(m, n, px, py, pz, xv, yv, zv, col) {
+  if (n >= m.instanceMatrix.count) return;
+  _bm.makeBasis(xv, yv, zv); _bm.setPosition(px, py, pz);
+  _bm.toArray(m.instanceMatrix.array, n * 16);
+  const ca = m.instanceColor.array; ca[n * 3] = col.r; ca[n * 3 + 1] = col.g; ca[n * 3 + 2] = col.b;
+}
+const AN_WAVES = 1.5, AN_ANGLE = 25 * Math.PI / 180, AN_CURVE = 0.35;
+function anWave(gx, gz) {                 // Phase der Welle (gx, gz in Feldern)
+  const u = gx / N, v = gz / N;
+  const along = u * Math.cos(AN_ANGLE) + v * Math.sin(AN_ANGLE), across = -u * Math.sin(AN_ANGLE) + v * Math.cos(AN_ANGLE);
+  return 2 * Math.PI * AN_WAVES * along + AN_CURVE * 2 * Math.PI * (across - 0.5) ** 2 + S.seed * 0.37;
+}
+const anColorIdx = (gx, gz) => Math.min(3, Math.floor((0.5 + 0.5 * Math.sin(anWave(gx, gz))) * 4 * 0.999));
+const _ax = new THREE.Vector3(), _ay = new THREE.Vector3(), _az = new THREE.Vector3(), _d = new THREE.Vector3();
+// eine Roehre: Fuss bei (cx, cz), Radius r, Hoehe h, Biegung zum Wellenkamm
+function anTube(next, cx, cz, r, h, ex, ez, bend, ci, k, salt) {
+  const RINGS = Math.max(5, Math.min(14, Math.round(4 + h * 2.5))), FLARE = 1.18, SQUASH = 0.3;
+  const off = t => bend * h * t * t;
+  const P = t => [cx + ex * off(t), h * t, cz + ez * off(t)];
+  const col = AN_COLORS[ci];
+  let last = null;
+  for (let i = 0; i < RINGS; i++) {
+    const t0 = i / RINGS, t1 = (i + 1) / RINGS, tm = (t0 + t1) / 2;
+    const a = P(t0), b = P(t1);
+    _ay.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    const len = _ay.length(); _ay.normalize();
+    _d.set(ex, 0, ez); _ax.copy(_d).addScaledVector(_ay, -_d.dot(_ay)).normalize();   // laengs Stroemung
+    _az.crossVectors(_ax, _ay).normalize();                                              // quer
+    const rad = r * (1 + (FLARE - 1) * tm);
+    const al = rad * (1 - SQUASH * tm), q = rad * (1 + SQUASH * 0.6 * tm);
+    putBasis(anSegM, next(anSegM), (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2,
+      _ax.clone().multiplyScalar(al), _ay.clone().multiplyScalar(len * 1.04), _az.clone().multiplyScalar(q), col);
+    last = { b, al, q, x: _ax.clone(), y: _ay.clone(), z: _az.clone() };
+  }
+  // Rand mit Wellen und dunkle Oeffnung
+  const cw = Math.max(0.02, Math.min(0.09, r * 0.25));
+  const cm = anCrownM[k % 3];
+  putBasis(cm, next(cm), last.b[0], last.b[1] - 0.004, last.b[2], last.x.clone().multiplyScalar(last.al), last.y.clone().multiplyScalar(cw), last.z.clone().multiplyScalar(last.q), col);
+  const d = Math.min(h * 0.12, 0.12);
+  putBasis(anInM, next(anInM), last.b[0] - last.y.x * d, last.b[1] - last.y.y * d, last.b[2] - last.y.z * d,
+    last.x.clone().multiplyScalar(last.al * 0.9), last.y.clone(), last.z.clone().multiplyScalar(last.q * 0.9), AN_INNER[ci]);
+}
+// Gebaeude in der Anemonenstadt: 1-3 Roehren je Grundstueck, Hoehe aus dem Spiel
+function buildAnemone(next, i, cx, cz, L, w, hgt, small) {
+  const gx = cx + N / 2, gz = cz + N / 2, ph = anWave(gx, gz), slope = Math.cos(ph);
+  const ci = anColorIdx(gx, gz);
+  const ang = AN_ANGLE + (hash(i, 601) - 0.5) * 0.3, sg = slope >= 0 ? 1 : -1;
+  const ex = -sg * Math.cos(ang), ez = -sg * Math.sin(ang);
+  const H = Math.max(0.12, L * FH * (small ? 0.75 : 1));
+  const n = small ? 2 + (hash(i, 602) < 0.4 ? 1 : 0) : Math.max(1, Math.min(4, Math.round(w * hgt * 0.8 + hash(i, 603) * 1.5)));
+  const fw = w / 2 - 0.12, fh = hgt / 2 - 0.12;
+  const spots = n === 1 ? [[0, 0]] : n === 2 ? [[-0.45, -0.3], [0.45, 0.35]] : n === 3 ? [[-0.5, -0.45], [0.5, -0.3], [0, 0.5]] : [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]];
+  const rBase = Math.min(fw, fh) * (n === 1 ? 0.62 : n === 2 ? 0.42 : 0.36);
+  spots.forEach(([sx, sz], k) => {
+    const r = rBase * (0.8 + 0.3 * hash(i, 610 + k)) * (k === 0 ? 1 : 0.85);
+    const h = H * (k === 0 ? 1 : 0.55 + 0.35 * hash(i, 620 + k));
+    // Biegung: an den Flanken stark, am Kamm fast gerade; hohe Roehren biegen sich relativ weniger
+    const bend = 0.62 * (0.08 + 0.92 * Math.pow(Math.abs(slope), 0.8)) * (0.85 + 0.15 * hash(i, 630 + k)) / (1 + h / 6);
+    const px = cx + sx * (fw - r), pz = cz + sz * (fh - r);
+    anTube(next, px, pz, r, h, ex, ez, bend, ci, Math.floor(hash(i, 640 + k) * 3), k);
+  });
+}
+
 const hover = new THREE.Mesh(new THREE.BoxGeometry(1, 0.06, 1), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, depthWrite: false }));
 hover.visible = false; scene.add(hover);
 
@@ -1122,7 +1211,7 @@ const congColor = c => tmpC.setHSL(clamp(0.33 - 0.33 * (c - 0.4) / 0.9, 0, 0.33)
 
 const xraySel = () => typeof XB !== "undefined" ? XB : -1;
 function build() {
-  const MINI = WORLD === "mini";
+  const MINI = WORLD === "mini", ANEM = WORLD === "anem";
   const cnt = new Map();
   const next = m => { const n = cnt.get(m) || 0; cnt.set(m, n + 1); return n; };
   const half = N / 2;
@@ -1130,7 +1219,7 @@ function build() {
     const t = S.type[i], gx = i % N, gz = (i / N) | 0, x = gx + 0.5 - half, z = gz + 0.5 - half;
     if (t === T.ROAD) {
       const ave = S.lvl[i] === 2;
-      put(roadM, next(roadM), x, 0.012, z, 0, 1, 0.024, 1, overlay === "traffic" ? congColor(S.cong[i]) : ave ? COL.ave : MINI ? MC.strasse : COL.road);
+      put(roadM, next(roadM), x, 0.012, z, 0, 1, 0.024, 1, overlay === "traffic" ? congColor(S.cong[i]) : ave ? COL.ave : MINI ? MC.strasse : ANEM ? AN_ROAD : COL.road);
       // Miniverse: Laternen mit leuchtenden Glaskugeln am Strassenrand
       if (MINI && ((gx * 3 + gz * 5) % 4 === 0)) {
         for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
@@ -1165,7 +1254,7 @@ function build() {
     if (t === T.EMPTY) continue;
     const small = isSmallHouse(i), cap = capFor(i);
     if (!overlay) {
-      const tc = L === 0 ? COL.zone[t] : t === T.I ? COL.lotInd : MINI ? MC.gehweg : small ? COL.lotGrass : COL.lotPlaza;
+      const tc = L === 0 ? COL.zone[t] : t === T.I ? COL.lotInd : MINI ? MC.gehweg : ANEM ? AN_PLATE[anColorIdx(bx + N / 2, bz + N / 2)] : small ? COL.lotGrass : COL.lotPlaza;
       put(tileM, next(tileM), bx, 0.01, bz, 0, tileS, 0.02, tileZ, tc);
       if (MINI && L > 0 && t !== T.I) put(tileM, next(tileM), bx, 0.022, bz, 0, tileS * 0.78, 0.006, tileZ * 0.78, MC.rasen);
     }
@@ -1174,6 +1263,7 @@ function build() {
     const h1 = hash(i, 1), h2 = hash(i, 2), h3 = hash(i, 3), h4 = hash(i, 4), h5 = hash(i, 5);
     const base = anchor && mw !== mh ? Math.floor(h1 * 2) * Math.PI : Math.floor(h1 * 4) * Math.PI / 2;
 
+    if (ANEM && t !== T.I) { buildAnemone(next, i, bx, bz, L, mw, mh, small); continue; }
     if (MINI && t !== T.I) {
       // Terrassenhaeuser in allen Groessen (kleine: Steinkern am Rand, hohe: Betonkern in der Mitte)
       let rdx = 0, rdz = 0;
@@ -1570,7 +1660,7 @@ function build() {
   }
 
   let grew = false;
-  for (const m of [...slabM, ...glassM, houseSlabM, houseGlassM, accentM, mBoxM, mGlassM, mBushM, mFallM, mMastM, mBallM, poolM, concM, slitM, chimM, roadM, markM, tileM, metroM, waterM, pathM, treeM, trunkM]) {
+  for (const m of [...slabM, ...glassM, houseSlabM, houseGlassM, accentM, mBoxM, mGlassM, mBushM, mFallM, mMastM, mBallM, anSegM, anInM, ...anCrownM, poolM, concM, slitM, chimM, roadM, markM, tileM, metroM, waterM, pathM, treeM, trunkM]) {
     // Zu wenig Platz? Speicher verdoppeln und gleich neu bauen (sonst fehlen Teile der letzten Haeuser)
     const need = cnt.get(m) || 0;
     if (need > m.instanceMatrix.count) {
@@ -3064,17 +3154,17 @@ function loop(now) {
 // ---------- Welt wechseln ----------
 const hemiL = scene.children.find(o => o.isHemisphereLight);
 function applyWorldStyle() {
-  const mini = WORLD === "mini";
-  const sky = mini ? 0x8cccf2 : 0xdcd8cf;
+  const mini = WORLD === "mini", anem = WORLD === "anem";
+  const sky = mini ? 0x8cccf2 : anem ? 0xe9e4de : 0xdcd8cf;
   scene.background.setHex(sky); scene.fog.color.setHex(sky);
   scene.fog.near = mini ? 110 : 90; scene.fog.far = mini ? 230 : 190;
-  ground.material.color.setHex(mini ? 0x6a9c46 : 0xe7e3da);
-  board.material.color.setHex(mini ? 0x86b85c : 0xd2cdc2);
+  ground.material.color.setHex(mini ? 0x6a9c46 : anem ? 0xf2efea : 0xe7e3da);
+  board.material.color.setHex(mini ? 0x86b85c : anem ? 0xe6d9cf : 0xd2cdc2);
   sun.color.setHex(mini ? 0xfff0d8 : 0xfff6e8); sun.intensity = mini ? 1.05 : 0.95;
   if (hemiL) { hemiL.color.setHex(mini ? 0xd8ecff : 0xeef3f8); hemiL.groundColor.setHex(mini ? 0x9aa070 : 0xb8b0a2); }
   miniEnv.visible = mini;
   $("world").value = WORLD;
-  document.title = mini ? "ParaWorld – Miniverse" : "ParaWorld – Spiralstadt";
+  document.title = mini ? "ParaWorld – Miniverse" : anem ? "ParaWorld – Anemonenstadt" : "ParaWorld – Spiralstadt";
 }
 function switchWorld(w) {
   if (w === WORLD) return;
